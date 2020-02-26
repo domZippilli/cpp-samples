@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gcs_indexer_constants.h"
 #include "bounded_queue.h"
+#include "gcs_indexer_constants.h"
 #include "indexer_utils.h"
 #include <google/cloud/spanner/client.h>
 #include <google/cloud/storage/client.h>
@@ -41,43 +41,6 @@ work_item make_work_item(std::string const& p) {
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
 
-void process_vector(std::vector<gcs::ObjectMetadata> const& objects,
-                    spanner::Client spanner_client, spanner::Timestamp start,
-                    bool discard_output) {
-  if (objects.empty()) return;
-
-  spanner_client
-      .Commit([&objects, start, discard_output](auto) {
-        static auto const columns = [] {
-          return std::vector<std::string>{std::begin(column_names),
-                                          std::end(column_names)};
-        }();
-        spanner::InsertOrUpdateMutationBuilder builder{std::string(table_name),
-                                                       columns};
-
-        int count = 0;
-        for (auto const& object : objects) {
-          bool is_archived =
-              object.time_deleted().time_since_epoch().count() != 0;
-          builder.EmplaceRow(
-              object.bucket(), object.name(),
-              std::to_string(object.generation()), object.metageneration(),
-              is_archived, static_cast<std::int64_t>(object.size()),
-              object.content_type(),
-              spanner::MakeTimestamp(object.time_created()).value(),
-              spanner::MakeTimestamp(object.updated()).value(),
-              object.storage_class(),
-              spanner::MakeTimestamp(object.time_storage_class_updated())
-                  .value(),
-              object.md5_hash(), object.crc32c(), start);
-        }
-        if (discard_output) return spanner::Mutations{};
-        return spanner::Mutations{std::move(builder).Build()};
-      })
-      .value();
-  total_insert_count.fetch_add(objects.size());
-}
-
 using object_metadata_queue = bounded_queue<std::vector<gcs::ObjectMetadata>>;
 using work_item_queue = bounded_queue<work_item>;
 
@@ -91,7 +54,8 @@ void insert_worker(object_metadata_queue& queue, spanner::Database database,
           std::move(pool_id).str()),
       spanner::SessionPoolOptions{}.set_min_sessions(1)));
   for (auto v = queue.pop(); v.has_value(); v = queue.pop()) {
-    process_vector(*v, spanner_client, start, discard_output);
+    gcs_indexer::insert_object_list(spanner_client, *v, start, discard_output,
+                                    total_insert_count);
   }
 }
 
@@ -267,11 +231,12 @@ int main(int argc, char* argv[]) try {
   work_queue.shutdown();
 
   std::cout << "Waiting for readers" << std::endl;
-  wait_for_tasks(std::move(readers), workers.size(), report_progress);
+  gcs_indexer::wait_for_tasks(std::move(readers), workers.size(),
+                              report_progress);
   object_queue.shutdown();
 
   std::cout << "Waiting for writers" << std::endl;
-  wait_for_tasks(std::move(workers), 0, report_progress);
+  gcs_indexer::wait_for_tasks(std::move(workers), 0, report_progress);
 
   std::cout << "DONE\n";
 

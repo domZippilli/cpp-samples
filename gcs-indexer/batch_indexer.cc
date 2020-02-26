@@ -34,42 +34,6 @@ struct work_item {
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
 
-void insert_object_list(spanner::Client spanner_client,
-                        std::vector<gcs::ObjectMetadata> const& objects,
-                        spanner::Timestamp start, bool discard_output) {
-  if (objects.empty()) return;
-
-  spanner_client
-      .Commit([&objects, start, discard_output](auto) {
-        static auto const columns = [] {
-          return std::vector<std::string>{std::begin(column_names),
-                                          std::end(column_names)};
-        }();
-        spanner::InsertOrUpdateMutationBuilder builder{std::string(table_name),
-                                                       columns};
-
-        for (auto const& object : objects) {
-          bool is_archived =
-              object.time_deleted().time_since_epoch().count() != 0;
-          builder.EmplaceRow(
-              object.bucket(), object.name(),
-              std::to_string(object.generation()), object.metageneration(),
-              is_archived, static_cast<std::int64_t>(object.size()),
-              object.content_type(),
-              spanner::MakeTimestamp(object.time_created()).value(),
-              spanner::MakeTimestamp(object.updated()).value(),
-              object.storage_class(),
-              spanner::MakeTimestamp(object.time_storage_class_updated())
-                  .value(),
-              object.md5_hash(), object.crc32c(), start);
-        }
-        if (discard_output) return spanner::Mutations{};
-        return spanner::Mutations{std::move(builder).Build()};
-      })
-      .value();
-  total_insert_count.fetch_add(objects.size());
-}
-
 using object_metadata_queue = bounded_queue<std::vector<gcs::ObjectMetadata>>;
 using work_item_queue = bounded_queue<work_item>;
 
@@ -84,7 +48,8 @@ void insert_worker(object_metadata_queue& queue,
           std::move(pool_id).str()),
       spanner::SessionPoolOptions{}.set_min_sessions(1)));
   for (auto v = queue.pop(); v.has_value(); v = queue.pop()) {
-    insert_object_list(spanner_client, *v, start, discard_output);
+    gcs_indexer::insert_object_list(spanner_client, *v, start, discard_output,
+                                    total_insert_count);
   }
 }
 
@@ -151,7 +116,7 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
     std::cout << "}\n";
   };
 
-  wait_for_tasks(std::move(workers), 0, report_progress);
+  gcs_indexer::wait_for_tasks(std::move(workers), 0, report_progress);
 }
 
 std::optional<work_item> pick_next_prefix(spanner::Client spanner_client,
@@ -175,8 +140,8 @@ UPDATE gcs_indexing_jobs
    AND prefix = @prefix)sql";
 
   std::optional<work_item> item;
-  spanner_client.Commit(
-      [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
+  spanner_client
+      .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
         auto row = spanner::GetSingularRow(spanner_client.ExecuteQuery(
             txn, spanner::SqlStatement(select_statement,
                                        {{"job_id", spanner::Value(job_id)}})));
@@ -195,7 +160,8 @@ UPDATE gcs_indexing_jobs
         item = work_item{values[0].template get<std::string>().value(),
                          values[1].template get<std::string>().value()};
         return spanner::Mutations{};
-      });
+      })
+      .value();
 
   return item;
 };

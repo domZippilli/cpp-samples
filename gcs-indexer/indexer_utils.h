@@ -14,10 +14,22 @@
 
 #pragma once
 
+#include "google/cloud/spanner/client.h"
+#include "google/cloud/storage/object_metadata.h"
 #include <functional>
 #include <future>
 #include <vector>
 
+namespace gcs_indexer {
+
 void wait_for_tasks(std::vector<std::future<void>> tasks,
                     std::size_t base_task_count,
                     std::function<void(std::size_t)> const& report_progress);
+
+void insert_object_list(
+    google::cloud::spanner::Client spanner_client,
+    std::vector<google::cloud::storage::ObjectMetadata> const& objects,
+    google::cloud::spanner::Timestamp start, bool discard_output,
+    std::atomic<std::uint64_t>& total_insert_count);
+
+}  // namespace gcs_indexer
