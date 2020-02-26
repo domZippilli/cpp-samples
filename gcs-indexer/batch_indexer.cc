@@ -277,7 +277,7 @@ int main(int argc, char* argv[]) try {
   auto const max_objects_per_mutation =
       vm["max-objects-per-mutation"].as<int>();
 
-  std::cout << "Populating work queue" << std::endl;
+  std::cout << "Reading indexing jobs" << std::endl;
   auto const job_id = vm["job-id"].as<std::string>();
   auto const task_id = vm["task-id"].as<std::string>();
   auto spanner_client = spanner::Client(spanner::MakeConnection(database));
