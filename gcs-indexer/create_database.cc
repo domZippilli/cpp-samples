@@ -30,19 +30,7 @@ int main(int argc, char* argv[]) try {
     return value == nullptr ? std::string{} : value;
   };
 
-  auto default_thread_count = [](int thread_per_core) -> int {
-    auto const cores = std::thread::hardware_concurrency();
-    if (cores == 0) return thread_per_core;
-    return static_cast<int>(cores * thread_per_core);
-  };
-
-  // This magic value is approximately 20000 (the spanner limit for "things
-  // changed by a single transaction") divided by the number of columns affected
-  // by each object.
-  int const default_max_objects_per_mutation = 1200;
-
   po::positional_options_description positional;
-  positional.add("bucket", -1);
   po::options_description options("Create a GCS indexing database");
   options.add_options()("help", "produce help message")
       //
@@ -54,11 +42,7 @@ int main(int argc, char* argv[]) try {
        "set the Cloud Spanner instance id")
       //
       ("database", po::value<std::string>()->required(),
-       "set the Cloud Spanner database id")
-      //
-      ("worker-threads",
-       po::value<unsigned int>()->default_value(default_thread_count(16)),
-       "the number of threads uploading data to Cloud Spanner");
+       "set the Cloud Spanner database id");
 
   po::variables_map vm;
   po::store(po::command_line_parser(argc, argv)
