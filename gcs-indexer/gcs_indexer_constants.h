@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef DOCKER_RUN_CPP_GCS_INDEXER_CONSTANTS_H_
-#define DOCKER_RUN_CPP_GCS_INDEXER_CONSTANTS_H_
+#pragma once
 
 #include <string>
 
@@ -34,5 +33,3 @@ inline constexpr char const* column_names[] = {
     "crc32c",
     "event_timestamp",
 };
-
-#endif  // DOCKER_RUN_CPP_GCS_INDEXER_CONSTANTS_H_

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Creates a k8s config to run a single refresh_bucket task."""
+"""Creates a k8s config to parallelize refresh_index_for_bucket."""
 
 import argparse
 import jinja2 as j2

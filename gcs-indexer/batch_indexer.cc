@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gcs_indexer_constants.h"
 #include "bounded_queue.h"
+#include "gcs_indexer_constants.h"
 #include <google/cloud/spanner/client.h>
 #include <google/cloud/storage/client.h>
 #include <boost/program_options.hpp>
@@ -40,9 +40,9 @@ work_item make_work_item(std::string const& p) {
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
 
-void process_vector(std::vector<gcs::ObjectMetadata> const& objects,
-                    spanner::Client spanner_client, spanner::Timestamp start,
-                    bool discard_output) {
+void insert_object_list(spanner::Client spanner_client,
+                        std::vector<gcs::ObjectMetadata> const& objects,
+                        spanner::Timestamp start, bool discard_output) {
   if (objects.empty()) return;
 
   spanner_client
@@ -54,7 +54,6 @@ void process_vector(std::vector<gcs::ObjectMetadata> const& objects,
         spanner::InsertOrUpdateMutationBuilder builder{std::string(table_name),
                                                        columns};
 
-        int count = 0;
         for (auto const& object : objects) {
           bool is_archived =
               object.time_deleted().time_since_epoch().count() != 0;
@@ -121,6 +120,13 @@ void list_worker(object_metadata_queue& dst, work_item_queue& src,
   }
 }
 
+std::optional<std::string> get_one_prefix(spanner::Client spanner_client,
+                                          gcs::Client gcs_client,
+                                          std::string const& task_id,
+                                          std::string const& job_id) {
+  return std::optional<std::string>{};
+};
+
 int main(int argc, char* argv[]) try {
   auto get_env = [](std::string_view name) -> std::string {
     auto value = std::getenv(name.data());
@@ -143,9 +149,11 @@ int main(int argc, char* argv[]) try {
   po::options_description options("Create a GCS indexing database");
   options.add_options()("help", "produce help message")
       //
-      ("bucket", po::value<std::vector<std::string>>()->required(),
-       "the bucket to refresh, use [BUCKET_NAME]/[PREFIX] to upload only a"
-       " prefix")
+      ("job-id", po::value<std::string>()->required(),
+       "read buckets and prefixes to index from the gcs_indexing_jobs table")
+      //
+      ("task-id", po::value<std::string>()->required(),
+       "read buckets and prefixes to index from the gcs_indexing_jobs table")
       //
       ("project",
        po::value<std::string>()->default_value(get_env("GOOGLE_CLOUD_PROJECT")),
@@ -160,10 +168,6 @@ int main(int argc, char* argv[]) try {
       ("worker-threads",
        po::value<unsigned int>()->default_value(default_thread_count(16)),
        "the number of threads uploading data to Cloud Spanner")
-      //
-      ("reader-threads",
-       po::value<unsigned int>()->default_value(default_thread_count(4)),
-       "the number of threads reading data from Google Cloud Storage")
       //
       ("discard-input", po::value<bool>()->default_value(false),
        "discard all data read from GCS, used for testing")
@@ -194,20 +198,16 @@ int main(int argc, char* argv[]) try {
       return 1;
     }
   }
-  if (vm.count("bucket") == 0) {
-    std::cout << "You must specific at least one bucket to refresh\n"
-              << options << "\n";
-    return 1;
-  }
+
+  auto const start =
+      spanner::MakeTimestamp(std::chrono::system_clock::now()).value();
+
   auto const worker_thread_count = vm["worker-threads"].as<unsigned int>();
   auto const reader_thread_count = vm["reader-threads"].as<unsigned int>();
 
   spanner::Database const database(vm["project"].as<std::string>(),
                                    vm["instance"].as<std::string>(),
                                    vm["database"].as<std::string>());
-
-  auto const start =
-      spanner::MakeTimestamp(std::chrono::system_clock::now()).value();
   auto const max_objects_per_mutation =
       vm["max-objects-per-mutation"].as<int>();
 
@@ -259,9 +259,19 @@ int main(int argc, char* argv[]) try {
   };
 
   std::cout << "Populating work queue" << std::endl;
-  for (auto const& p : vm["bucket"].as<std::vector<std::string>>()) {
-    work_queue.push(make_work_item(p));
+  auto const job_id = vm["job-id"].as<std::string>();
+  auto const task_id = vm["task-id"].as<std::string>();
+  auto spanner_client = spanner::Client(spanner::MakeConnection(database));
+  auto gcs_client = gcs::Client::CreateDefaultClient().value();
+  auto get_one_prefix = [&spanner_client, &gcs_client, &job_id, &task_id] {
+    return pick_one_prefix(spanner_+client, gcs_client, job_id, task_id);
+  };
+    for (auto bucket = get_one_prefix(client, ); bucket; bucket = get_one_prefix()) {
+      process_one_prefix(client, *bucket);
+      mark_done(client, *bucket);
+    }
   }
+
   // Tell the workers that no more data is coming so they can exit.
   work_queue.shutdown();
 
