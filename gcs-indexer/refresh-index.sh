@@ -37,7 +37,7 @@ readonly GOOGLE_CLOUD_SPANNER_DATABASE
 
 # Create a GKE job to refresh each prefix
 for prefix in "${@}"; do
-  ./refresh_index_for_bucket_config.py \
+  ./refresh_index_config.py \
       "--project=${GOOGLE_CLOUD_PROJECT}" \
       "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
       "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
