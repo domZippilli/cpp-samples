@@ -55,8 +55,6 @@ done
     "--project=${GOOGLE_CLOUD_PROJECT}" \
     "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
     "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
-    "--job-id=${JOB_ID}"
-
-     # | kubectl apply -f -
+    "--job-id=${JOB_ID}" | kubectl apply -f -
 
 exit 0

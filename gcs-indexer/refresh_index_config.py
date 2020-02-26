@@ -27,7 +27,8 @@ kind: Job
 metadata:
   name: refresh-index-{{timestamp}}-{{random}}
 spec:
-  completions: 1
+  completions: 10
+  parallelism: 10
   template:
     metadata:
       name: refresh-bucket-worker
@@ -81,9 +82,11 @@ parser.add_argument('--database', type=str, required=True,
                     help='configure the Cloud Spanner database id')
 parser.add_argument('--job-id', type=str, required=True,
                     help='the indexing job id')
+parser.add_argument('--parallelism', default=10, type=check_positive,
+                    help='the maximum number of parallel tasks')
 args = parser.parse_args()
 
 worker_threads = 2
 print(template.render(project_id=args.project, instance=args.instance, database=args.database,
-                      job_id=args.job_id, worker_threads=worker_threads,
+                      job_id=args.job_id, worker_threads=worker_threads, parallelism=args.parallelism,
                       timestamp=int(time.time()), random=random.randint(0, 100000)))
