@@ -123,17 +123,16 @@ std::optional<work_item> pick_next_prefix(spanner::Client spanner_client,
                                           std::string const& job_id,
                                           std::string const& task_id) {
   auto const select_statement = R"sql(
-SELECT job_id, bucket, prefix
+SELECT bucket, prefix
   FROM gcs_indexing_jobs
  WHERE owner IS NULL
-   AND status != 'DONE'
    AND job_id = @job_id
  LIMIT 1
 )sql";
   auto const update_statement = R"sql(
 UPDATE gcs_indexing_jobs
-   SET status = 'WORKING'
-       owner = @task_id
+   SET status = 'WORKING',
+       owner = @task_id,
        updated = PENDING_COMMIT_TIMESTAMP()
  WHERE job_id = @job_id
    AND bucket = @bucket
@@ -142,9 +141,14 @@ UPDATE gcs_indexing_jobs
   std::optional<work_item> item;
   spanner_client
       .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
-        auto row = spanner::GetSingularRow(spanner_client.ExecuteQuery(
+        auto rows = spanner_client.ExecuteQuery(
             txn, spanner::SqlStatement(select_statement,
-                                       {{"job_id", spanner::Value(job_id)}})));
+                                       {{"job_id", spanner::Value(job_id)}}));
+        auto it = rows.begin();
+        // There is no more work to do, exit the commit loop and have this
+        // function return an empty optional.
+        if (it == rows.end()) return spanner::Mutations{};
+        auto row = std::move(*it);
         if (!row) return std::move(row).status();
 
         auto values = std::move(row)->values();
@@ -152,6 +156,7 @@ UPDATE gcs_indexing_jobs
         auto update_result = spanner_client.ExecuteDml(
             txn, spanner::SqlStatement(update_statement,
                                        {{"job_id", spanner::Value(job_id)},
+                                        {"task_id", spanner::Value(task_id)},
                                         {"bucket", values[0]},
                                         {"prefix", values[1]}}));
         if (!update_result) return std::move(update_result).status();
@@ -172,7 +177,7 @@ void mark_done(spanner::Client spanner_client, std::string const& task_id,
       [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
         auto const statement = R"sql(
 UPDATE gcs_indexing_jobs
-   SET status = 'DONE'
+   SET status = 'DONE',
        updated = PENDING_COMMIT_TIMESTAMP()
  WHERE job_id = @job_id
    AND bucket = @bucket
