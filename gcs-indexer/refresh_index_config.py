@@ -25,7 +25,7 @@ template = j2.Template("""
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: refresh-bucket-{{timestamp}}-{{random}}
+  name: refresh-index-{{timestamp}}-{{random}}
 spec:
   completions: 1
   template:
@@ -42,13 +42,12 @@ spec:
           image: gcr.io/{{project_id}}/gcs-indexer-tools:latest
           imagePullPolicy: Always
           command: [
-              '/r/refresh_index_for_bucket',
+              '/r/refresh_index_worker',
               '--project={{project_id}}',
               '--instance={{instance}}',
               '--database={{database}}',
-              '--reader-threads={{reader_threads}}',
               '--worker-threads={{worker_threads}}',
-              {{ prefixes|join(', ') }}
+              '--job-id={{job_id}}'
           ]
           volumeMounts:
             - name: service-account-key
@@ -56,6 +55,10 @@ spec:
           env:
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: /var/secrets/service-account-key/key.json
+            - name: GCS_INDEXER_TASK_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
 """)
 
 
@@ -72,20 +75,15 @@ parser.add_argument('--project',
                     default=os.environ.get('GOOGLE_CLOUD_PROJECT'),
                     type=str, required=True,
                     help='configure the Google Cloud Project')
-parser.add_argument('--instance',
-                    type=str, required=True,
+parser.add_argument('--instance', type=str, required=True,
                     help='configure the Cloud Spanner instance id')
-parser.add_argument('--database',
-                    type=str, required=True,
+parser.add_argument('--database', type=str, required=True,
                     help='configure the Cloud Spanner database id')
-parser.add_argument('prefixes', type=str, nargs='+',
-                    help='the GCS bucket where the objects are created')
+parser.add_argument('--job-id', type=str, required=True,
+                    help='the indexing job id')
 args = parser.parse_args()
 
-reader_threads = 2 if len(args.prefixes) > 1 else 1
-worker_threads = 8 if len(args.prefixes) > 1 else 4
-
+worker_threads = 2
 print(template.render(project_id=args.project, instance=args.instance, database=args.database,
-                      reader_threads=reader_threads, worker_threads=worker_threads,
-                      prefixes=["'%s'" % prefix for prefix in args.prefixes],
+                      job_id=args.job_id, worker_threads=worker_threads,
                       timestamp=int(time.time()), random=random.randint(0, 100000)))

@@ -40,13 +40,23 @@ JOB_ID="job-$(date +%s)-${RANDOM}"
 readonly JOB_ID
 
 # Create a GKE job to refresh each prefix
-for prefix in "${@}"; do
+for work_item in "${@}"; do
+  b="$(dirname "${work_item}")"
+  p="$(basename "${work_item}")"
+  gcloud spanner rows insert \
+      "--project=${GOOGLE_CLOUD_PROJECT}" \
+      "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
+      "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
+      "--table=gcs_indexing_jobs" \
+      "--data=job_id=${JOB_ID},bucket=${b},prefix=${p}"
 done
 
 ./refresh_index_config.py \
     "--project=${GOOGLE_CLOUD_PROJECT}" \
     "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
     "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
-    "--job-id=${JOB_ID}" | kubectl apply -f -
+    "--job-id=${JOB_ID}"
+
+     # | kubectl apply -f -
 
 exit 0

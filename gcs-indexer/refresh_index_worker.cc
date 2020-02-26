@@ -140,7 +140,8 @@ UPDATE gcs_indexing_jobs
 
   std::optional<work_item> item;
   spanner_client
-      .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
+      .Commit([&](spanner::Transaction const& txn)
+                  -> google::cloud::StatusOr<spanner::Mutations> {
         auto rows = spanner_client.ExecuteQuery(
             txn, spanner::SqlStatement(select_statement,
                                        {{"job_id", spanner::Value(job_id)}}));
@@ -162,8 +163,8 @@ UPDATE gcs_indexing_jobs
         if (!update_result) return std::move(update_result).status();
 
         // TODO(coryan) - show and tell on the need for `template ` here.
-        item = work_item{values[0].template get<std::string>().value(),
-                         values[1].template get<std::string>().value()};
+        item = work_item{values[0].get<std::string>().value(),
+                         values[1].get<std::string>().value()};
         return spanner::Mutations{};
       })
       .value();
@@ -219,7 +220,9 @@ int main(int argc, char* argv[]) try {
       ("job-id", po::value<std::string>()->required(),
        "read buckets and prefixes to index from the gcs_indexing_jobs table")
       //
-      ("task-id", po::value<std::string>()->required(),
+      ("task-id",
+       po::value<std::string>()->required()->default_value(
+           "GCS_INDEXER_TASK_ID"),
        "read buckets and prefixes to index from the gcs_indexing_jobs table")
       //
       ("project",
