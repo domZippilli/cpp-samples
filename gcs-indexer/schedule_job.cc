@@ -86,7 +86,7 @@ VALUES (@job_id, @bucket, @prefix)
 
   std::vector<spanner::SqlStatement> statements;
   auto const job_id = vm["job-id"].as<std::string>();
-  for (auto const& bucket : vm["buckets"].as<std::vector<std::string>>()) {
+  for (auto const& bucket : vm["bucket"].as<std::vector<std::string>>()) {
     auto const wi = gcs_indexer::make_work_item(bucket);
     statements.push_back(spanner::SqlStatement(
         insert_statement, {{"job_id", spanner::Value(job_id)},
