@@ -27,8 +27,8 @@ kind: Job
 metadata:
   name: refresh-index-{{timestamp}}-{{random}}
 spec:
-  completions: 10
-  parallelism: 10
+  completions: {{parallelism}}
+  parallelism: {{parallelism}}
   template:
     metadata:
       name: refresh-bucket-worker

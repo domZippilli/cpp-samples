@@ -26,16 +26,11 @@ namespace po = boost::program_options;
 namespace spanner = google::cloud::spanner;
 namespace gcs = google::cloud::storage;
 
-struct work_item {
-  std::string bucket;
-  std::string prefix;
-};
-
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
 
 using object_metadata_queue = bounded_queue<std::vector<gcs::ObjectMetadata>>;
-using work_item_queue = bounded_queue<work_item>;
+using work_item_queue = bounded_queue<gcs_indexer::work_item>;
 
 void insert_worker(object_metadata_queue& queue,
                    spanner::Database const& database, spanner::Timestamp start,
@@ -54,7 +49,8 @@ void insert_worker(object_metadata_queue& queue,
 }
 
 void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
-                      work_item const& item, spanner::Timestamp const& start) {
+                      gcs_indexer::work_item const& item,
+                      spanner::Timestamp const& start) {
   auto const worker_thread_count = vm["worker-threads"].as<unsigned int>();
   auto const max_objects_per_mutation =
       vm["max-objects-per-mutation"].as<int>();
@@ -80,6 +76,7 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
   auto prefix_option =
       item.prefix.empty() ? gcs::Prefix{} : gcs::Prefix(item.prefix);
   std::vector<gcs::ObjectMetadata> buffer;
+  auto upload_start = std::chrono::steady_clock::now();
   auto flush = [&](bool force) {
     if (buffer.empty()) return;
     if (not force and buffer.size() < max_objects_per_mutation) return;
@@ -94,11 +91,10 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
     flush(false);
   }
   flush(true);
+  std::cout << "ListObjects done [" << total_read_count.load() << "]\n";
   object_queue.shutdown();
 
-  auto report_progress = [&object_queue,
-                          upload_start = std::chrono::steady_clock::now()](
-                             std::size_t active) {
+  auto report_progress = [&object_queue, upload_start](std::size_t active) {
     using std::chrono::duration_cast;
     using std::chrono::milliseconds;
     auto read_count = total_read_count.load();
@@ -118,12 +114,12 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
   };
 
   gcs_indexer::wait_for_tasks(std::move(workers), 0, report_progress);
-  std::cout << "DONE\n";
+  std::cout << "DONE [" << total_insert_count.load() << "]\n";
 }
 
-std::optional<work_item> pick_next_prefix(spanner::Client spanner_client,
-                                          std::string const& job_id,
-                                          std::string const& task_id) {
+std::optional<gcs_indexer::work_item> pick_next_prefix(
+    spanner::Client spanner_client, std::string const& job_id,
+    std::string const& task_id) {
   auto const select_statement = R"sql(
 SELECT bucket, prefix
   FROM gcs_indexing_jobs
@@ -140,7 +136,7 @@ UPDATE gcs_indexing_jobs
    AND bucket = @bucket
    AND prefix = @prefix)sql";
 
-  std::optional<work_item> item;
+  std::optional<gcs_indexer::work_item> item;
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
@@ -165,8 +161,8 @@ UPDATE gcs_indexing_jobs
         if (!update_result) return std::move(update_result).status();
 
         // TODO(coryan) - show and tell on the need for `template ` here.
-        item = work_item{values[0].get<std::string>().value(),
-                         values[1].get<std::string>().value()};
+        item = gcs_indexer::work_item{values[0].get<std::string>().value(),
+                                      values[1].get<std::string>().value()};
         return spanner::Mutations{};
       })
       .value();
@@ -175,7 +171,7 @@ UPDATE gcs_indexing_jobs
 };
 
 void mark_done(spanner::Client spanner_client, std::string const& task_id,
-               std::string const& job_id, work_item const& item) {
+               std::string const& job_id, gcs_indexer::work_item const& item) {
   spanner_client.Commit(
       [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
         auto const statement = R"sql(
