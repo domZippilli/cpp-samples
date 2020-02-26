@@ -17,6 +17,13 @@
 
 namespace gcs_indexer {
 
+work_item make_work_item(std::string const& p) {
+  auto pos = p.find_first_of('/');
+  auto bucket = p.substr(0, pos);
+  auto prefix = pos == std::string::npos ? std::string{} : p.substr(pos + 1);
+  return {std::move(bucket), std::move(prefix)};
+}
+
 void wait_for_tasks(std::vector<std::future<void>> tasks,
                     std::size_t base_task_count,
                     std::function<void(std::size_t)> const& report_progress) {

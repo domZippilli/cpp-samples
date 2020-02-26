@@ -26,23 +26,11 @@ namespace po = boost::program_options;
 namespace spanner = google::cloud::spanner;
 namespace gcs = google::cloud::storage;
 
-struct work_item {
-  std::string bucket;
-  std::string prefix;
-};
-
-work_item make_work_item(std::string const& p) {
-  auto pos = p.find_first_of('/');
-  auto bucket = p.substr(0, pos);
-  auto prefix = pos == std::string::npos ? std::string{} : p.substr(pos + 1);
-  return {std::move(bucket), std::move(prefix)};
-}
-
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
 
 using object_metadata_queue = bounded_queue<std::vector<gcs::ObjectMetadata>>;
-using work_item_queue = bounded_queue<work_item>;
+using work_item_queue = bounded_queue<gcs_indexer::work_item>;
 
 void insert_worker(object_metadata_queue& queue, spanner::Database database,
                    spanner::Timestamp start, bool discard_output) {
@@ -225,7 +213,7 @@ int main(int argc, char* argv[]) try {
 
   std::cout << "Populating work queue" << std::endl;
   for (auto const& p : vm["bucket"].as<std::vector<std::string>>()) {
-    work_queue.push(make_work_item(p));
+    work_queue.push(gcs_indexer::make_work_item(p));
   }
   // Tell the workers that no more data is coming so they can exit.
   work_queue.shutdown();

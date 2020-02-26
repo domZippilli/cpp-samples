@@ -35,13 +35,18 @@ readonly GOOGLE_CLOUD_SPANNER_INSTANCE
 GOOGLE_CLOUD_SPANNER_DATABASE="${GOOGLE_CLOUD_SPANNER_DATABASE:-gcs-indexer-db}"
 readonly GOOGLE_CLOUD_SPANNER_DATABASE
 
+# Create a JOB ID
+JOB_ID="job-$(date +%s)-${RANDOM}"
+readonly JOB_ID
+
 # Create a GKE job to refresh each prefix
 for prefix in "${@}"; do
-  ./refresh_index_config.py \
-      "--project=${GOOGLE_CLOUD_PROJECT}" \
-      "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
-      "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
-      "${prefix}" | kubectl apply -f -
 done
+
+./refresh_index_config.py \
+    "--project=${GOOGLE_CLOUD_PROJECT}" \
+    "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
+    "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
+    "--job-id=${JOB_ID}" | kubectl apply -f -
 
 exit 0

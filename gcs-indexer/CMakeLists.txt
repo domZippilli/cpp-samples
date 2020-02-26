@@ -120,6 +120,23 @@ target_link_libraries(
             OpenSSL::SSL
             ZLIB::ZLIB)
 
+add_executable(schedule_job schedule_job.cc)
+target_link_libraries(
+        schedule_job
+        PRIVATE spanner_client
+        storage_client
+        indexer_utils
+        Boost::headers
+        Boost::program_options
+        googleapis-c++::spanner_protos
+        gRPC::grpc++
+        gRPC::grpc
+        CURL::libcurl
+        ${EXTRA_LIBRARY}
+        OpenSSL::Crypto
+        OpenSSL::SSL
+        ZLIB::ZLIB)
+
 add_executable(generate_randomly_named_objects
                generate_randomly_named_objects.cc)
 target_link_libraries(

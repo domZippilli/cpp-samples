@@ -32,4 +32,11 @@ void insert_object_list(
     google::cloud::spanner::Timestamp start, bool discard_output,
     std::atomic<std::uint64_t>& total_insert_count);
 
+struct work_item {
+  std::string bucket;
+  std::string prefix;
+};
+
+work_item make_work_item(std::string const& p);
+
 }  // namespace gcs_indexer
