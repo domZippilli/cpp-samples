@@ -66,7 +66,8 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
 
   object_metadata_queue object_queue;
 
-  std::cout << "Starting worker threads [" << worker_thread_count << "]"
+  std::cout << "Starting worker threads [" << worker_thread_count << "] for "
+            << "gs://" << item.bucket << "/" << item.prefix << "**"
             << std::endl;
   std::vector<std::future<void>> workers;
   std::generate_n(std::back_inserter(workers), worker_thread_count,
@@ -117,6 +118,7 @@ void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
   };
 
   gcs_indexer::wait_for_tasks(std::move(workers), 0, report_progress);
+  std::cout << "DONE\n";
 }
 
 std::optional<work_item> pick_next_prefix(spanner::Client spanner_client,
@@ -292,8 +294,6 @@ int main(int argc, char* argv[]) try {
     process_one_item(gcs_client, vm, *item, start);
     mark_done(spanner_client, task_id, job_id, *item);
   }
-
-  std::cout << "DONE\n";
 
   return 0;
 } catch (std::exception const& ex) {
