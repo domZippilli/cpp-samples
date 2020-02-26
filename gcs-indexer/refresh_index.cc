@@ -14,7 +14,7 @@
 
 #include "bounded_queue.h"
 #include "gcs_indexer_constants.h"
-#include "indexer_utils.h"
+#include "gcs_indexer_utils.h"
 #include <google/cloud/spanner/client.h>
 #include <google/cloud/storage/client.h>
 #include <boost/program_options.hpp>

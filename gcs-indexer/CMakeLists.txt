@@ -73,7 +73,7 @@ target_link_libraries(
             ZLIB::ZLIB)
 
 add_library(indexer_utils gcs_indexer_constants.h bounded_queue.h
-                          indexer_utils.cc indexer_utils.h)
+        gcs_indexer_utils.cc gcs_indexer_utils.h)
 target_link_libraries(
     indexer_utils
     Boost::headers

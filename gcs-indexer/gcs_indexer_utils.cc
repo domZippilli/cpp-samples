@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "indexer_utils.h"
+#include "gcs_indexer_utils.h"
 #include "gcs_indexer_constants.h"
 
 namespace gcs_indexer {
