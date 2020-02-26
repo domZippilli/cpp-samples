@@ -14,6 +14,7 @@
 
 #include "bounded_queue.h"
 #include "gcs_indexer_constants.h"
+#include "indexer_utils.h"
 #include <google/cloud/spanner/client.h>
 #include <google/cloud/storage/client.h>
 #include <boost/program_options.hpp>
@@ -29,13 +30,6 @@ struct work_item {
   std::string bucket;
   std::string prefix;
 };
-
-work_item make_work_item(std::string const& p) {
-  auto pos = p.find_first_of('/');
-  auto bucket = p.substr(0, pos);
-  auto prefix = pos == std::string::npos ? std::string{} : p.substr(pos + 1);
-  return {std::move(bucket), std::move(prefix)};
-}
 
 std::atomic<std::uint64_t> total_read_count;
 std::atomic<std::uint64_t> total_insert_count;
@@ -79,53 +73,155 @@ void insert_object_list(spanner::Client spanner_client,
 using object_metadata_queue = bounded_queue<std::vector<gcs::ObjectMetadata>>;
 using work_item_queue = bounded_queue<work_item>;
 
-void insert_worker(object_metadata_queue& queue, spanner::Database database,
-                   spanner::Timestamp start, bool discard_output) {
+void insert_worker(object_metadata_queue& queue,
+                   spanner::Database const& database, spanner::Timestamp start,
+                   bool discard_output) {
   std::ostringstream pool_id;
   pool_id << std::this_thread::get_id();
   auto spanner_client = spanner::Client(spanner::MakeConnection(
-      std::move(database),
+      database,
       spanner::ConnectionOptions{}.set_num_channels(1).set_channel_pool_domain(
           std::move(pool_id).str()),
       spanner::SessionPoolOptions{}.set_min_sessions(1)));
   for (auto v = queue.pop(); v.has_value(); v = queue.pop()) {
-    process_vector(*v, spanner_client, start, discard_output);
+    insert_object_list(spanner_client, *v, start, discard_output);
   }
 }
 
-void list_worker(object_metadata_queue& dst, work_item_queue& src,
-                 int max_objects_per_mutation, bool discard_input) {
-  auto gcs_client = gcs::Client::CreateDefaultClient().value();
+void process_one_item(gcs::Client gcs_client, po::variables_map const& vm,
+                      work_item const& item, spanner::Timestamp const& start) {
+  auto const worker_thread_count = vm["worker-threads"].as<unsigned int>();
+  auto const max_objects_per_mutation =
+      vm["max-objects-per-mutation"].as<int>();
+  auto const discard_output = vm["discard-output"].as<bool>();
+  auto const discard_input = vm["discard-input"].as<bool>();
+  spanner::Database const database(vm["project"].as<std::string>(),
+                                   vm["instance"].as<std::string>(),
+                                   vm["database"].as<std::string>());
 
-  for (auto item = src.pop(); item.has_value(); item = src.pop()) {
-    auto prefix_option =
-        item->prefix.empty() ? gcs::Prefix{} : gcs::Prefix(item->prefix);
-    std::vector<gcs::ObjectMetadata> buffer;
-    auto flush = [&](bool force) {
-      if (buffer.empty()) return;
-      // TODO(...) - we should use a better estimation of the mutation cost,
-      //    e.g. the number of columns affected.
-      if (not force and buffer.size() < max_objects_per_mutation) return;
-      if (not discard_input) dst.push(std::move(buffer));
-      buffer.clear();
+  object_metadata_queue object_queue;
+
+  std::cout << "Starting worker threads [" << worker_thread_count << "]"
+            << std::endl;
+  std::vector<std::future<void>> workers;
+  std::generate_n(std::back_inserter(workers), worker_thread_count,
+                  [&database, start, &object_queue, discard_output] {
+                    return std::async(std::launch::async, insert_worker,
+                                      std::ref(object_queue), database, start,
+                                      discard_output);
+                  });
+
+  auto prefix_option =
+      item.prefix.empty() ? gcs::Prefix{} : gcs::Prefix(item.prefix);
+  std::vector<gcs::ObjectMetadata> buffer;
+  auto flush = [&](bool force) {
+    if (buffer.empty()) return;
+    if (not force and buffer.size() < max_objects_per_mutation) return;
+    if (not discard_input) object_queue.push(std::move(buffer));
+    buffer.clear();
+  };
+  for (auto& o : gcs_client.ListObjects(item.bucket, std::move(prefix_option),
+                                        gcs::Versions{true})) {
+    if (not o) break;
+    buffer.push_back(*std::move(o));
+    ++total_read_count;
+    flush(false);
+  }
+  flush(true);
+  object_queue.shutdown();
+
+  auto report_progress = [&object_queue,
+                          upload_start = std::chrono::steady_clock::now()](
+                             std::size_t active) {
+    using std::chrono::duration_cast;
+    using std::chrono::milliseconds;
+    auto read_count = total_read_count.load();
+    auto insert_count = total_insert_count.load();
+    auto elapsed = std::chrono::steady_clock::now() - upload_start;
+    if ((read_count == 0 and insert_count == 0) or elapsed.count() == 0) return;
+    auto log = [elapsed](char const* action, std::uint64_t count) {
+      auto rate = count * 1000 / duration_cast<milliseconds>(elapsed).count();
+      std::cout << "  " << action << " " << count << " objects (" << rate
+                << " objects/s)\n";
     };
-    for (auto& o : gcs_client.ListObjects(
-             item->bucket, std::move(prefix_option), gcs::Versions{true})) {
-      if (not o) break;
-      buffer.push_back(*std::move(o));
-      ++total_read_count;
-      flush(false);
-    }
-    flush(true);
-  }
+    log("Read", read_count);
+    log("Upload", insert_count);
+    std::cout << "  " << active << " task(s) still active, queue={";
+    object_queue.print_stats(std::cout);
+    std::cout << "}\n";
+  };
+
+  wait_for_tasks(std::move(workers), 0, report_progress);
 }
 
-std::optional<std::string> get_one_prefix(spanner::Client spanner_client,
-                                          gcs::Client gcs_client,
-                                          std::string const& task_id,
-                                          std::string const& job_id) {
-  return std::optional<std::string>{};
+std::optional<work_item> pick_next_prefix(spanner::Client spanner_client,
+                                          std::string const& job_id,
+                                          std::string const& task_id) {
+  auto const select_statement = R"sql(
+SELECT job_id, bucket, prefix
+  FROM gcs_indexing_jobs
+ WHERE owner IS NULL
+   AND status != 'DONE'
+   AND job_id = @job_id
+ LIMIT 1
+)sql";
+  auto const update_statement = R"sql(
+UPDATE gcs_indexing_jobs
+   SET status = 'WORKING'
+       owner = @task_id
+       updated = PENDING_COMMIT_TIMESTAMP()
+ WHERE job_id = @job_id
+   AND bucket = @bucket
+   AND prefix = @prefix)sql";
+
+  std::optional<work_item> item;
+  spanner_client.Commit(
+      [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
+        auto row = spanner::GetSingularRow(spanner_client.ExecuteQuery(
+            txn, spanner::SqlStatement(select_statement,
+                                       {{"job_id", spanner::Value(job_id)}})));
+        if (!row) return std::move(row).status();
+
+        auto values = std::move(row)->values();
+
+        auto update_result = spanner_client.ExecuteDml(
+            txn, spanner::SqlStatement(update_statement,
+                                       {{"job_id", spanner::Value(job_id)},
+                                        {"bucket", values[0]},
+                                        {"prefix", values[1]}}));
+        if (!update_result) return std::move(update_result).status();
+
+        // TODO(coryan) - show and tell on the need for `template ` here.
+        item = work_item{values[0].template get<std::string>().value(),
+                         values[1].template get<std::string>().value()};
+        return spanner::Mutations{};
+      });
+
+  return item;
 };
+
+void mark_done(spanner::Client spanner_client, std::string const& task_id,
+               std::string const& job_id, work_item const& item) {
+  spanner_client.Commit(
+      [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
+        auto const statement = R"sql(
+UPDATE gcs_indexing_jobs
+   SET status = 'DONE'
+       updated = PENDING_COMMIT_TIMESTAMP()
+ WHERE job_id = @job_id
+   AND bucket = @bucket
+   AND prefix = @prefix)sql";
+        auto result = spanner_client.ExecuteDml(
+            txn, spanner::SqlStatement(
+                     statement, {
+                                    {"job_id", spanner::Value(job_id)},
+                                    {"bucket", spanner::Value(item.bucket)},
+                                    {"prefix", spanner::Value(item.prefix)},
+                                }));
+        if (!result) return std::move(result).status();
+        return spanner::Mutations{};
+      });
+}
 
 int main(int argc, char* argv[]) try {
   auto get_env = [](std::string_view name) -> std::string {
@@ -203,7 +299,6 @@ int main(int argc, char* argv[]) try {
       spanner::MakeTimestamp(std::chrono::system_clock::now()).value();
 
   auto const worker_thread_count = vm["worker-threads"].as<unsigned int>();
-  auto const reader_thread_count = vm["reader-threads"].as<unsigned int>();
 
   spanner::Database const database(vm["project"].as<std::string>(),
                                    vm["instance"].as<std::string>(),
@@ -211,92 +306,18 @@ int main(int argc, char* argv[]) try {
   auto const max_objects_per_mutation =
       vm["max-objects-per-mutation"].as<int>();
 
-  object_metadata_queue object_queue;
-  work_item_queue work_queue;
-
-  std::cout << "Starting worker threads [" << worker_thread_count << "]"
-            << std::endl;
-  std::vector<std::future<void>> workers;
-  std::generate_n(std::back_inserter(workers), worker_thread_count,
-                  [&database, start, &object_queue,
-                   discard_output = vm["discard-output"].as<bool>()] {
-                    return std::async(std::launch::async, insert_worker,
-                                      std::ref(object_queue), database, start,
-                                      discard_output);
-                  });
-
-  std::cout << "Starting reader threads [" << reader_thread_count << "]"
-            << std::endl;
-  std::vector<std::future<void>> readers;
-  std::generate_n(std::back_inserter(readers), reader_thread_count,
-                  [&work_queue, &object_queue, max_objects_per_mutation,
-                   discard_input = vm["discard-input"].as<bool>()] {
-                    return std::async(std::launch::async, list_worker,
-                                      std::ref(object_queue),
-                                      std::ref(work_queue),
-                                      max_objects_per_mutation, discard_input);
-                  });
-
-  auto report_progress = [&object_queue,
-                          upload_start = std::chrono::steady_clock::now()](
-                             std::size_t active) {
-    using std::chrono::duration_cast;
-    using std::chrono::milliseconds;
-    auto read_count = total_read_count.load();
-    auto insert_count = total_insert_count.load();
-    auto elapsed = std::chrono::steady_clock::now() - upload_start;
-    if ((read_count == 0 and insert_count == 0) or elapsed.count() == 0) return;
-    auto log = [elapsed](char const* action, std::uint64_t count) {
-      auto rate = count * 1000 / duration_cast<milliseconds>(elapsed).count();
-      std::cout << "  " << action << " " << count << " objects (" << rate
-                << " objects/s)\n";
-    };
-    log("Read", read_count);
-    log("Upload", insert_count);
-    std::cout << "  " << active << " task(s) still active, queue={";
-    object_queue.print_stats(std::cout);
-    std::cout << "}\n";
-  };
-
   std::cout << "Populating work queue" << std::endl;
   auto const job_id = vm["job-id"].as<std::string>();
   auto const task_id = vm["task-id"].as<std::string>();
   auto spanner_client = spanner::Client(spanner::MakeConnection(database));
   auto gcs_client = gcs::Client::CreateDefaultClient().value();
-  auto get_one_prefix = [&spanner_client, &gcs_client, &job_id, &task_id] {
-    return pick_one_prefix(spanner_+client, gcs_client, job_id, task_id);
+  auto next_prefix = [&spanner_client, &gcs_client, &job_id, &task_id] {
+    return pick_next_prefix(spanner_client, job_id, task_id);
   };
-    for (auto bucket = get_one_prefix(client, ); bucket; bucket = get_one_prefix()) {
-      process_one_prefix(client, *bucket);
-      mark_done(client, *bucket);
-    }
+  for (auto item = next_prefix(); item; item = next_prefix()) {
+    process_one_item(gcs_client, vm, *item, start);
+    mark_done(spanner_client, task_id, job_id, *item);
   }
-
-  // Tell the workers that no more data is coming so they can exit.
-  work_queue.shutdown();
-
-  auto wait_for_tasks = [&report_progress](std::vector<std::future<void>> tasks,
-                                           std::size_t base_task_count) {
-    while (not tasks.empty()) {
-      using namespace std::chrono_literals;
-      using std::chrono::duration_cast;
-      auto& w = tasks.back();
-      auto status = w.wait_for(10s);
-      if (status == std::future_status::ready) {
-        tasks.pop_back();
-        continue;
-      }
-      report_progress(tasks.size() + base_task_count);
-    }
-    report_progress(tasks.size() + base_task_count);
-  };
-
-  std::cout << "Waiting for readers" << std::endl;
-  wait_for_tasks(std::move(readers), workers.size());
-  object_queue.shutdown();
-
-  std::cout << "Waiting for writers" << std::endl;
-  wait_for_tasks(std::move(workers), 0);
 
   std::cout << "DONE\n";
 

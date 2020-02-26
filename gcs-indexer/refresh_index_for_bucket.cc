@@ -14,6 +14,7 @@
 
 #include "gcs_indexer_constants.h"
 #include "bounded_queue.h"
+#include "indexer_utils.h"
 #include <google/cloud/spanner/client.h>
 #include <google/cloud/storage/client.h>
 #include <boost/program_options.hpp>
@@ -265,28 +266,12 @@ int main(int argc, char* argv[]) try {
   // Tell the workers that no more data is coming so they can exit.
   work_queue.shutdown();
 
-  auto wait_for_tasks = [&report_progress](std::vector<std::future<void>> tasks,
-                                           std::size_t base_task_count) {
-    while (not tasks.empty()) {
-      using namespace std::chrono_literals;
-      using std::chrono::duration_cast;
-      auto& w = tasks.back();
-      auto status = w.wait_for(10s);
-      if (status == std::future_status::ready) {
-        tasks.pop_back();
-        continue;
-      }
-      report_progress(tasks.size() + base_task_count);
-    }
-    report_progress(tasks.size() + base_task_count);
-  };
-
   std::cout << "Waiting for readers" << std::endl;
-  wait_for_tasks(std::move(readers), workers.size());
+  wait_for_tasks(std::move(readers), workers.size(), report_progress);
   object_queue.shutdown();
 
   std::cout << "Waiting for writers" << std::endl;
-  wait_for_tasks(std::move(workers), 0);
+  wait_for_tasks(std::move(workers), 0, report_progress);
 
   std::cout << "DONE\n";
 

@@ -109,10 +109,10 @@ CREATE TABLE gcs_indexing_jobs (
   job_id STRING(128),
   bucket STRING(128),
   prefix STRING(1024),
-  job_status STRING(32),
+  status STRING(32),
   owner STRING(32),
   updated TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (job_id, bucket_prefix)
+) PRIMARY KEY (job_id, bucket, prefix)
 )sql";
   auto created = client.CreateDatabase(
       database, {gcs_objects_table_ddl, gcs_indexer_table_ddl});

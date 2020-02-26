@@ -64,10 +64,25 @@ target_link_libraries(create_database
         OpenSSL::Crypto
         OpenSSL::SSL
         ZLIB::ZLIB)
-        
-add_executable(refresh_index_for_bucket refresh_index_for_bucket.cc gcs_indexer_constants.h  bounded_queue.h)
+
+add_library(indexer_utils
+        gcs_indexer_constants.h
+        bounded_queue.h indexer_utils.cc indexer_utils.h)
+target_link_libraries(indexer_utils
+        Boost::headers
+        Boost::program_options
+        googleapis-c++::spanner_protos
+        gRPC::grpc++
+        gRPC::grpc
+        ${EXTRA_LIBRARY}
+        OpenSSL::Crypto
+        OpenSSL::SSL
+        ZLIB::ZLIB)
+
+add_executable(refresh_index_for_bucket refresh_index_for_bucket.cc)
 target_link_libraries(refresh_index_for_bucket
         PRIVATE spanner_client
+        indexer_utils
         storage_client
         Boost::headers
         Boost::program_options
@@ -80,10 +95,11 @@ target_link_libraries(refresh_index_for_bucket
         OpenSSL::SSL
         ZLIB::ZLIB)
 
-add_executable(batch_indexer batch_indexer.cc gcs_indexer_constants.h bounded_queue.h)
+add_executable(batch_indexer batch_indexer.cc)
 target_link_libraries(batch_indexer
         PRIVATE spanner_client
         storage_client
+        indexer_utils
         Boost::headers
         Boost::program_options
         googleapis-c++::spanner_protos
