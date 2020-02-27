@@ -159,8 +159,12 @@ UPDATE gcs_indexing_jobs
                                         {"bucket", values[0]},
                                         {"prefix", values[1]}}));
         if (!update_result) return std::move(update_result).status();
+        if (update_result->RowsModified() != 1) {
+          // This is unexpected, have the Commit() loop try again.
+          return google::cloud::Status(google::cloud::StatusCode::kAborted,
+                                       "please try again");
+        }
 
-        // TODO(coryan) - show and tell on the need for `template ` here.
         item = gcs_indexer::work_item{values[0].get<std::string>().value(),
                                       values[1].get<std::string>().value()};
         return spanner::Mutations{};
