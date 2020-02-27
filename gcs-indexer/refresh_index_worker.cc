@@ -125,7 +125,7 @@ SELECT bucket, prefix
   FROM gcs_indexing_jobs
  WHERE owner IS NULL
    AND job_id = @job_id
- LIMIT 1
+ LIMIT 16
 )sql";
   auto const update_statement = R"sql(
 UPDATE gcs_indexing_jobs
@@ -137,20 +137,26 @@ UPDATE gcs_indexing_jobs
    AND prefix = @prefix)sql";
 
   std::optional<gcs_indexer::work_item> item;
+  std::mt19937_64 generator(std::random_device{}());
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
-        auto rows = spanner_client.ExecuteQuery(
-            txn, spanner::SqlStatement(select_statement,
-                                       {{"job_id", spanner::Value(job_id)}}));
-        auto it = rows.begin();
+        std::vector<spanner::Row> results;
+        for (auto& r : spanner_client.ExecuteQuery(
+                 txn,
+                 spanner::SqlStatement(select_statement,
+                                       {{"job_id", spanner::Value(job_id)}}))) {
+          if (!r) return std::move(r).status();
+          results.push_back(*std::move(r));
+        }
         // There is no more work to do, exit the commit loop and have this
         // function return an empty optional.
-        if (it == rows.end()) return spanner::Mutations{};
-        auto row = std::move(*it);
-        if (!row) return std::move(row).status();
+        if (results.empty()) return spanner::Mutations{};
 
-        auto values = std::move(row)->values();
+        auto row_idx = std::uniform_int_distribution<std::size_t>(
+            0, results.size() - 1)(generator);
+
+        auto values = std::move(results[row_idx]).values();
 
         auto update_result = spanner_client.ExecuteDml(
             txn, spanner::SqlStatement(update_statement,
