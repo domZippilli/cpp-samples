@@ -82,7 +82,7 @@ parser.add_argument('--database', type=str, required=True,
                     help='configure the Cloud Spanner database id')
 parser.add_argument('--job-id', type=str, required=True,
                     help='the indexing job id')
-parser.add_argument('--parallelism', default=10, type=check_positive,
+parser.add_argument('--parallelism', default=30, type=check_positive,
                     help='the maximum number of parallel tasks')
 args = parser.parse_args()
 

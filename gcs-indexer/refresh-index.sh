@@ -15,10 +15,9 @@
 
 set -eu
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <prefix> [prefix ...]"
-  echo "  A prefix can be a bucket name (without the gs://)"
-  echo "  or a bucket name and a object name prefix, separated by /"
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 <job-id> [bucket ...]"
+  echo "  Where job-id is a job previously defined using 'schedule_job'"
   exit 1
 fi
 
@@ -36,20 +35,17 @@ GOOGLE_CLOUD_SPANNER_DATABASE="${GOOGLE_CLOUD_SPANNER_DATABASE:-gcs-indexer-db}"
 readonly GOOGLE_CLOUD_SPANNER_DATABASE
 
 # Create a JOB ID
-JOB_ID="job-$(date +%s)-${RANDOM}"
+JOB_ID="$1"
 readonly JOB_ID
 
+readonly SA_ID="gcs-index-updater"
+readonly SA_NAME="${SA_ID}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
+
 # Create a GKE job to refresh each prefix
-for work_item in "${@}"; do
-  b="$(dirname "${work_item}")"
-  p="$(basename "${work_item}")"
-  gcloud spanner rows insert \
-      "--project=${GOOGLE_CLOUD_PROJECT}" \
-      "--instance=${GOOGLE_CLOUD_SPANNER_INSTANCE}" \
-      "--database=${GOOGLE_CLOUD_SPANNER_DATABASE}" \
-      "--table=gcs_indexing_jobs" \
-      "--data=job_id=${JOB_ID},bucket=${b},prefix=${p}"
-done
+shift
+for bucket in "${@}"; do
+  gsutil iam ch "serviceAccount:${SA_NAME}:roles/storage.legacyBucketReader" "gs://${bucket}"
+done | sort -u | xargs -I{}
 
 ./refresh_index_config.py \
     "--project=${GOOGLE_CLOUD_PROJECT}" \
