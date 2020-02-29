@@ -18,7 +18,7 @@ cmake_minimum_required(VERSION 3.10)
 
 # Define the project name and where to report bugs.
 set(PACKAGE_BUGREPORT "https://github.com/GoogleCloudPlatform/cpp-samples/issues")
-project(Docker-Run-C++ CXX C)
+project(GKE-Batch-Job CXX C)
 
 # Configure the Compiler options, we will be using C++17 features.
 set(CMAKE_CXX_STANDARD 17)
@@ -30,6 +30,8 @@ find_package(CURL REQUIRED)
 find_package(Boost 1.66 REQUIRED COMPONENTS program_options)
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Threads)
+
 set(EXTRA_LIBRARY "" CACHE FILEPATH "Additional libraries.
         Several CMake modules (but not CONFIGs!) do not link the dependencies
         when using static libraries. This flag can be used to add additional
@@ -39,34 +41,8 @@ mark_as_advanced(EXTRA_LIBRARY)
 # When using static libraries the FindgRPC.cmake module does not define the
 # correct dependencies (OpenSSL::Crypto, c-cares, etc) for gRPC::grpc.
 # Explicitly listing these dependencies avoids the undefined symbols problems.
-add_executable(pubsub_handler pubsub_handler.cc gcs_indexer_constants.h)
-target_link_libraries(pubsub_handler
-        PRIVATE spanner_client
-        Boost::headers
-        Boost::program_options
-        googleapis-c++::spanner_protos
-        gRPC::grpc++
-        gRPC::grpc
-        ${EXTRA_LIBRARY}
-        OpenSSL::Crypto
-        OpenSSL::SSL
-        ZLIB::ZLIB)
-
-add_executable(create_database create_database.cc)
-target_link_libraries(create_database
-        PRIVATE spanner_client
-        Boost::headers
-        Boost::program_options
-        googleapis-c++::spanner_protos
-        gRPC::grpc++
-        gRPC::grpc
-        ${EXTRA_LIBRARY}
-        OpenSSL::Crypto
-        OpenSSL::SSL
-        ZLIB::ZLIB)
-        
-add_executable(refresh_index_for_bucket refresh_index_for_bucket.cc gcs_indexer_constants.h)
-target_link_libraries(refresh_index_for_bucket
+add_executable(gke_batch_job gke_batch_job.cc)
+target_link_libraries(gke_batch_job
         PRIVATE spanner_client
         storage_client
         Boost::headers
@@ -80,22 +56,5 @@ target_link_libraries(refresh_index_for_bucket
         OpenSSL::SSL
         ZLIB::ZLIB)
 
-add_executable(delete_index_for_bucket delete_index_for_bucket.cc)
-target_link_libraries(delete_index_for_bucket
-        PRIVATE spanner_client
-        Boost::headers
-        Boost::program_options
-        googleapis-c++::spanner_protos
-        gRPC::grpc++
-        gRPC::grpc
-        ${EXTRA_LIBRARY}
-        OpenSSL::Crypto
-        OpenSSL::SSL
-        ZLIB::ZLIB)
-
 include(GNUInstallDirs)
-install(
-        TARGETS create_database pubsub_handler
-         refresh_index_for_bucket
-         delete_index_for_bucket
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS gke_batch_job RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

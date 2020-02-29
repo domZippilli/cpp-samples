@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# We chose Alpine to build the image because it has good support for creating
+# statically-linked, small programs.
 ARG DISTRO_VERSION=edge
 FROM alpine:${DISTRO_VERSION} AS base
 
+# Create separate targets for each phase, this allows us to cache intermediate
+# stages when using Google Cloud Build, and makes the final deployment stage
+# small as it contains only what is needed.
 FROM base AS devtools
 
 # Install the typical development tools and some additions:
@@ -26,6 +31,7 @@ RUN apk update && \
         boost-dev \
         boost-static \
         build-base \
+        c-ares-static \
         cmake \
         curl \
         curl-dev \
@@ -58,50 +64,50 @@ RUN cmake -S. -B.build -GNinja \
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.2.1.tar.gz https://github.com/googleapis/cpp-cmakefiles/archive/v0.2.1.tar.gz
-RUN tar -zxf v0.2.1.tar.gz
-WORKDIR /var/tmp/build/cpp-cmakefiles-0.2.1
+RUN curl -s -L -o v0.4.1.tar.gz https://github.com/googleapis/cpp-cmakefiles/archive/v0.4.1.tar.gz
+RUN tar -zxf v0.4.1.tar.gz
+WORKDIR /var/tmp/build/cpp-cmakefiles-0.4.1
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.17.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp-common/archive/v0.17.0.tar.gz
-RUN tar -zxf v0.17.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-common-0.17.0
+RUN curl -s -L -o v0.20.0.tar.gz \
+    https://github.com/googleapis/google-cloud-cpp-common/archive/v0.20.0.tar.gz
+RUN tar -zxf v0.20.0.tar.gz
+WORKDIR /var/tmp/build/google-cloud-cpp-common-0.20.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.17.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp/archive/v0.17.0.tar.gz
-RUN tar -zxf v0.17.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-0.17.0
+RUN curl -s -L -o v0.19.0.tar.gz \
+    https://github.com/googleapis/google-cloud-cpp/archive/v0.19.0.tar.gz
+RUN tar -zxf v0.19.0.tar.gz
+WORKDIR /var/tmp/build/google-cloud-cpp-0.19.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.5.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp-spanner/archive/v0.5.0.tar.gz
-RUN tar -zxf v0.5.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-spanner-0.5.0
+RUN curl -s -L -o v0.8.0.tar.gz \
+    https://github.com/googleapis/google-cloud-cpp-spanner/archive/v0.8.0.tar.gz
+RUN tar -zxf v0.8.0.tar.gz
+WORKDIR /var/tmp/build/google-cloud-cpp-spanner-0.8.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
 RUN cmake --build .build --target install
 
-RUN apk update && \
-    apk add \
-        c-ares-static
-
+# Copy the source code to /v/source and compile it.
 FROM devtools AS build
 COPY . /v/source
 WORKDIR /v/source
+
+# Run the CMake configuration step, setting the options to create
+# a statically linked C++ program
 RUN cmake -S/v/source -B/v/binary -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBoost_USE_STATIC_LIBS=ON \
@@ -114,28 +120,17 @@ RUN cmake -S/v/source -B/v/binary -GNinja \
     -DEXTRA_LIBRARY="/usr/lib/libnghttp2.a;/usr/lib/libcares.a" \
     -DCMAKE_EXE_LINKER_FLAGS="-static"
 
+# Compile the binary and strip it to reduce its size.
 RUN cmake --build /v/binary
-RUN strip /v/binary/pubsub_handler
+RUN strip /v/binary/gke_batch_job
 
-FROM base AS with-certs
-RUN apk update && \
-    apk add ca-certificates && \
-    rm -rf /var/cache/apk/*
-RUN update-ca-certificates
-
-FROM with-certs AS pubsub-handler
+# Create the final deployment image, we need the CA certificates for the
+# application to verify the Google SSL certificates.
+FROM base AS gke-batch-job
+RUN apk update && apk add ca-certificates && rm -rf /var/cache/apk/*
 WORKDIR /r
-COPY --from=build /v/binary/pubsub_handler /r
 
-CMD "/r/pubsub_handler" \
-    "--project=${SPANNER_PROJECT}" \
-    "--instance=${SPANNER_INSTANCE}" \
-    "--database=${SPANNER_DATABASE}"
-
-FROM with-certs AS tools
-WORKDIR /r
-COPY --from=build /v/binary/create_database /r
-COPY --from=build /v/binary/delete_index_for_bucket /r
-COPY --from=build /v/binary/refresh_index_for_bucket /r
+# Copy the program from the previously created stage and make it the entry point.
+COPY --from=build /v/binary/gke_batch_job /r
 
 CMD "/bin/false"
