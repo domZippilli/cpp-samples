@@ -30,6 +30,7 @@ metadata:
 spec:
   parallelism: {{parallelism}}
   completions: {{completions}}
+  backoffLimit: 100
   template:
     metadata:
       name: generate-randomly-named-objects-{{action}}
@@ -54,7 +55,7 @@ spec:
           ]
           resources:
             requests:
-              cpu: '20m'
+              cpu: '10m'
               memory: '8Mi'
           volumeMounts:
             - name: service-account-key
@@ -82,23 +83,23 @@ args = parser.parse_args()
 tag = '%d-%08x' % (int(time.time()), random.randint(0, 1 << 32))
 job_id = 'job-id-%s' % tag
 
-with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE, text=True) as schedule:
-    out, err = schedule.communicate(
+with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, text=True) as schedule:
+    schedule.communicate(
         template.render(action='schedule-job', parallelism=1, completions=1,
                         tag=tag, project=args.project, instance=args.instance, database=args.database,
                         bucket=args.bucket, object_count=args.object_count, job_id=job_id))
+    schedule.wait()
 
 k8s_job_name = 'job.batch/schedule-job-%s' % tag
 print("Waiting for job %s" % k8s_job_name)
 subprocess.run(['kubectl', 'wait', '--for=condition=complete', k8s_job_name])
 
-with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE, text=True) as run:
-    out, err = run.communicate(
+with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, text=True) as run:
+    run.communicate(
         template.render(action='worker', parallelism=args.parallelism, completions=args.parallelism,
                         tag=tag, project=args.project, instance=args.instance, database=args.database,
                         bucket=args.bucket, object_count=args.object_count, job_id=job_id))
+    run.wait()
 
 k8s_job_name = 'job.batch/worker-%s' % tag
 message = j2.Template("""

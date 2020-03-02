@@ -211,9 +211,9 @@ SELECT task_id
      , use_hash_prefix
   FROM generate_object_jobs
  WHERE job_id = @job_id
-   AND (owner IS NULL
-    OR  (owner = 'WORKING'
-   AND   updated < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 15 MINUTE)
+   AND (status IS NULL
+    OR  (status = 'WORKING'
+   AND   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), updated, MINUTE) > 10
         )
        )
  LIMIT 1000
