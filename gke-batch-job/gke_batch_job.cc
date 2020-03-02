@@ -175,8 +175,9 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
   auto const task_size = 1'000L;
   auto flush = [&client, &statements] {
     client
-        .Commit([&](auto txn) {
-          auto result = client.ExecuteBatchDml(txn, statements).value();
+        .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
+          auto result = client.ExecuteBatchDml(txn, statements);
+          if (!result) return std::move(result).status();
           return spanner::Mutations{};
         })
         .value();
@@ -236,6 +237,7 @@ UPDATE generate_object_jobs
                  txn,
                  spanner::SqlStatement(select_statement,
                                        {{"job_id", spanner::Value(job_id)}}))) {
+          if (!r) return std::move(r).status();  // TODO(coryan) - cleanup
           results.push_back(std::move(r).value());
         }
         // There is no more work to do, exit the commit loop and have this
@@ -247,16 +249,15 @@ UPDATE generate_object_jobs
 
         auto values = std::move(results[row_idx]).values();
 
-        auto update_result =
-            spanner_client
-                .ExecuteDml(txn,
-                            spanner::SqlStatement(
-                                update_statement,
-                                {{"job_id", spanner::Value(job_id)},
-                                 {"task_id", spanner::Value(values[0])},
-                                 {"worker_id", spanner::Value(worker_id)}}))
-                .value();
-        if (update_result.RowsModified() != 1) {
+        // TODO(coryan) - cleanup
+        auto update_result = spanner_client.ExecuteDml(
+            txn,
+            spanner::SqlStatement(update_statement,
+                                  {{"job_id", spanner::Value(job_id)},
+                                   {"task_id", spanner::Value(values[0])},
+                                   {"worker_id", spanner::Value(worker_id)}}));
+        if (!update_result) return std::move(update_result).status();
+        if (update_result->RowsModified() != 1) {
           // This is unexpected, have the Commit() loop try again.
           return google::cloud::Status(google::cloud::StatusCode::kAborted,
                                        "please try again");
@@ -275,7 +276,9 @@ UPDATE generate_object_jobs
 
 /// Mark a work item as completed.
 void mark_done(spanner::Client spanner_client, work_item const& item) {
-  spanner_client.Commit([&](auto txn) {
+  // TODO(coryan) - cleanup
+  spanner_client.Commit([&](auto txn)
+                            -> google::cloud::StatusOr<spanner::Mutations> {
     auto const statement = R"sql(
 UPDATE generate_object_jobs
    SET status = 'DONE',
@@ -287,8 +290,8 @@ UPDATE generate_object_jobs
             .ExecuteDml(txn, spanner::SqlStatement(
                                  statement,
                                  {{"job_id", spanner::Value(item.job_id)},
-                                  {"task_id", spanner::Value(item.task_id)}}))
-            .value();
+                                  {"task_id", spanner::Value(item.task_id)}}));
+    if (!result) return std::move(result).status();
     return spanner::Mutations{};
   });
 }
