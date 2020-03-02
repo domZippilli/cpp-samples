@@ -38,5 +38,5 @@ gsutil -p ${GOOGLE_CLOUD_PROJECT} mb gs://${BUCKET_NAME}
 ## Run a batch job to populate the bucket
 
 ```bash
-./gke_config.py --project=${GOOGLE_CLOUD_PROJECT} --bucket=${BUCKET_NAME} --object-count=1000000
+./run_job.py --project=${GOOGLE_CLOUD_PROJECT} --bucket=${BUCKET_NAME} --object-count=1000000
 ```
