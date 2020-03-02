@@ -177,8 +177,9 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
 )sql";
 
   std::vector<spanner::SqlStatement> statements;
-  // Cloud Spanner supports at most 20'000 rows per transaction.
-  auto const max_rows = 20'000L;
+  // Cloud Spanner supports at most 20'000 changes per transaction, use 2'000
+  // to be safe.
+  auto const max_rows = 2'000L;
   auto const task_size = std::max(100L, object_count / 10'000);
   auto flush = [&client, &statements] {
     client
@@ -224,7 +225,6 @@ SELECT task_id
    AND   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), updated, MINUTE) > 10
         )
        )
- LIMIT 1000
 )sql";
   auto const update_statement = R"sql(
 UPDATE generate_object_jobs
@@ -239,22 +239,25 @@ UPDATE generate_object_jobs
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
         item = {};
-        std::vector<spanner::Row> results;
+        // Use a simple Reservoir Sampling algorithm to select an item at random
+        // from the work queue.
+        std::int64_t count = 0;
+        std::vector<spanner::Value> values;
         for (auto& r : spanner_client.ExecuteQuery(
                  txn,
                  spanner::SqlStatement(select_statement,
                                        {{"job_id", spanner::Value(job_id)}}))) {
           if (!r) return std::move(r).status();  // TODO(coryan) - cleanup
-          results.push_back(std::move(r).value());
+          if (std::uniform_int_distribution<std::int64_t>(
+                  0, count)(generator) == 0) {
+            values = std::move(r).value().values();
+          }
+          ++count;
         }
+
         // There is no more work to do, exit the commit loop and have this
         // function return an empty optional.
-        if (results.empty()) return spanner::Mutations{};
-
-        auto row_idx = std::uniform_int_distribution<std::size_t>(
-            0, results.size() - 1)(generator);
-
-        auto values = std::move(results[row_idx]).values();
+        if (values.empty()) return spanner::Mutations{};
 
         // TODO(coryan) - cleanup
         auto update_result = spanner_client.ExecuteDml(
