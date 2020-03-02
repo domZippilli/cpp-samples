@@ -45,7 +45,6 @@ add_executable(gke_batch_job gke_batch_job.cc)
 target_link_libraries(gke_batch_job
         PRIVATE spanner_client
         storage_client
-        Boost::headers
         Boost::program_options
         googleapis-c++::spanner_protos
         gRPC::grpc++

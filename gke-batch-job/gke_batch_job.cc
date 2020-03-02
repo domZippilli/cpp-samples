@@ -31,12 +31,8 @@ namespace spanner = google::cloud::spanner;
 std::atomic<std::int64_t> total_object_count;
 
 /// Create a object name fragment at random.
-std::string random_name_portion(std::mt19937_64& gen, int n) {
-  static char const alphabet[] =
-      "abcdefghijklmnopqrstuvwxyz"
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-      "0123456789"
-      "/-_.~@+=";
+std::string random_alphanum_string(std::mt19937_64& gen, int n) {
+  static char const alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
   std::string result;
   std::generate_n(std::back_inserter(result), n, [&gen] {
     return alphabet[std::uniform_int_distribution<int>(
@@ -65,18 +61,41 @@ struct work_item {
   bool use_hash_prefix;
 };
 
-/// Create randomly named objects as prescribed by @p item
+/// Create all the work items for a given task
+std::vector<work_item> create_work_items(po::variables_map const& vm) {
+  auto const bucket = vm["bucket"].as<std::string>();
+  auto const object_count = vm["object-count"].as<long>();
+  auto const use_hash_prefix = vm["use-hash-prefix"].as<bool>();
+  auto const job_id = vm["job-id"].as<std::string>();
+  auto const minimum_work_item_size = vm["minimum-work-item-size"].as<long>();
+  auto const target_work_item_count = vm["target-work-item-count"].as<long>();
+
+  std::vector<work_item> results;
+  auto const task_size =
+      (std::max)(minimum_work_item_size, object_count / target_work_item_count);
+  std::mt19937_64 generator(std::random_device{}());
+  for (long offset = 0; offset < object_count; offset += task_size) {
+    std::ostringstream os;
+    os << "name-" << random_alphanum_string(generator, 32) << "-offset-"
+       << std::setw(8) << std::setfill('0') << std::hex
+       << static_cast<std::int64_t>(offset);
+    auto task_id = std::move(os).str();
+    auto const task_objects_count =
+        (std::min)(task_size, object_count - offset);
+    results.push_back(work_item{job_id, task_id, bucket, task_objects_count,
+                                use_hash_prefix});
+  }
+  return results;
+}
+
+/// Create named objects as prescribed by @p item
 void process_one_item(gcs::Client gcs_client, std::mt19937_64& generator,
                       work_item const& item) {
-  std::string basename;
   for (std::int64_t i = 0; i != item.object_count; ++i) {
-    // Generating a random name is expensive, so we re-use the same name over
-    // 100 objects.
-    if (i % 100 == 0) basename = random_name_portion(generator, 32) + '-';
-    auto object_name = basename + std::to_string(i);
+    auto object_name = item.task_id + "/object-" + std::to_string(i);
     auto hashed = hashed_name(item.use_hash_prefix, std::move(object_name));
     std::ostringstream os;
-    os << "Basename: " << basename << "\nUse Hash Prefix: " << std::boolalpha
+    os << "Task ID: " << item.task_id << "\nUse Hash Prefix: " << std::boolalpha
        << item.use_hash_prefix << "\nHashed Name: " << hashed
        << "\nObject Index: " << i << "\n";
     gcs_client.InsertObject(item.bucket, hashed, std::move(os).str()).value();
@@ -84,43 +103,36 @@ void process_one_item(gcs::Client gcs_client, std::mt19937_64& generator,
   }
 }
 
-/// Create randomly named objects as prescribed by @p item
-void process_one_item_gen(gcs::Client gcs_client, work_item const& item) {
+/// Run a local worker thread.
+void worker_thread(std::vector<work_item> const& work_items,
+                   unsigned int thread_count, int thread_id) {
   // Initialize a random bit source with some small amount of entropy.
   std::mt19937_64 generator(std::random_device{}());
-  process_one_item(gcs_client, generator, item);
+  gcs::Client gcs_client = gcs::Client::CreateDefaultClient().value();
+  for (std::size_t i = 0; i != work_items.size(); ++i) {
+    // Shard the work across the threads.
+    if (i % thread_count != thread_id) continue;
+    process_one_item(gcs_client, generator, work_items[i]);
+  }
 }
 
 /// Create N parallel threads calling process_one_item().
 std::vector<std::future<void>> launch_threads(po::variables_map const& vm) {
   auto const bucket = vm["bucket"].as<std::string>();
-  auto const use_hash_prefix = vm["use-hash-prefix"].as<bool>();
   auto const thread_count = [&vm] {
     auto const tc = vm["thread-count"].as<unsigned int>();
     return tc == 0 ? 1U : tc;
   }();
-  auto const object_count = vm["object-count"].as<long>();
 
-  std::cout << "Creating " << object_count << " randomly named objects in "
-            << bucket << std::endl;
-
-  if (object_count == 0) return {};
+  std::cout << "Creating randomly named objects in " << bucket << std::endl;
+  auto const work_items = create_work_items(vm);
+  if (work_items.empty()) return {};
 
   int thread_id = 0;
-  auto remainder = object_count % thread_count;
   std::vector<std::future<void>> threads(thread_count);
   std::generate_n(threads.begin(), thread_count, [&] {
-    auto task_object_count = object_count / thread_count;
-    if (remainder > 0) {
-      --remainder;
-      ++task_object_count;
-    }
-    auto const task_id = "local_thread-" + std::to_string(++thread_id);
-    work_item item{"local-job", task_id, bucket, task_object_count,
-                   use_hash_prefix};
-    gcs::Client gcs_client = gcs::Client::CreateDefaultClient().value();
-    return std::async(std::launch::async, process_one_item_gen,
-                      std::move(gcs_client), std::move(item));
+    return std::async(std::launch::async, worker_thread, work_items,
+                      thread_count, thread_id++);
   });
   return threads;
 }
@@ -158,9 +170,6 @@ CREATE TABLE generate_object_jobs (
 
 /// Insert rows in the `generate_object_jobs` table describing a job.
 void schedule_job(po::variables_map const& vm) {
-  auto const bucket = vm["bucket"].as<std::string>();
-  auto const object_count = vm["object-count"].as<long>();
-  auto const use_hash_prefix = vm["use-hash-prefix"].as<bool>();
   auto const job_id = vm["job-id"].as<std::string>();
   spanner::Database const database(vm["project"].as<std::string>(),
                                    vm["instance"].as<std::string>(),
@@ -176,11 +185,17 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
         PENDING_COMMIT_TIMESTAMP())
 )sql";
 
-  std::vector<spanner::SqlStatement> statements;
-  // Cloud Spanner supports at most 20'000 changes per transaction, use 2'000
-  // to be safe.
+  // Cloud Spanner supports at most 20'000 mutations per transaction, and each
+  // column counts as its own mutation. In our case we have 8 columns per
+  // insert, which limits us to 2'500 rows. We use 2'000 to stay safe in case
+  // new columns are added:
+  //
+  // More information at:
+  //   https://cloud.google.com/spanner/quotas#limits_for_creating_reading_updating_and_deleting_data
   auto const max_rows = 2'000L;
-  auto const task_size = std::max(100L, object_count / 10'000);
+  auto const work_items = create_work_items(vm);
+
+  std::vector<spanner::SqlStatement> statements;
   auto flush = [&client, &statements] {
     client
         .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
@@ -192,16 +207,14 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
     std::cout << "Committed " << statements.size() << " work items\n";
     statements.clear();
   };
-  for (long offset = 0; offset < object_count; offset += task_size) {
-    std::string task_id = "task-" + std::to_string(offset);
-    std::int64_t objects_in_task = std::min(task_size, object_count - offset);
+  for (auto const& wi : work_items) {
     statements.push_back(spanner::SqlStatement(
         insert_statement,
-        {{"job_id", spanner::Value(job_id)},
-         {"task_id", spanner::Value(task_id)},
-         {"bucket", spanner::Value(bucket)},
-         {"object_count", spanner::Value(objects_in_task)},
-         {"use_hash_prefix", spanner::Value(use_hash_prefix)}}));
+        {{"job_id", spanner::Value(wi.job_id)},
+         {"task_id", spanner::Value(wi.task_id)},
+         {"bucket", spanner::Value(wi.bucket)},
+         {"object_count", spanner::Value(wi.object_count)},
+         {"use_hash_prefix", spanner::Value(wi.use_hash_prefix)}}));
     if (statements.size() >= max_rows) flush();
   }
   if (not statements.empty()) flush();
@@ -209,10 +222,10 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
 }
 
 /// Pick the next task out of the job queue.
-std::optional<work_item> pick_next_work_item(spanner::Client spanner_client,
-                                             std::string const& job_id,
-                                             std::string const& worker_id,
-                                             std::mt19937_64& generator) {
+std::optional<work_item> pick_next_work_item(
+    spanner::Client spanner_client, std::string const& job_id,
+    std::string const& worker_id, std::chrono::minutes const& task_timeout,
+    std::mt19937_64& generator) {
   auto const select_statement = R"sql(
 SELECT task_id
      , bucket
@@ -222,7 +235,7 @@ SELECT task_id
  WHERE job_id = @job_id
    AND (status IS NULL
     OR  (status = 'WORKING'
-   AND   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), updated, MINUTE) > 10
+   AND   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), updated, MINUTE) > @task_timeout
         )
        )
 )sql";
@@ -243,10 +256,11 @@ UPDATE generate_object_jobs
         // from the work queue.
         std::int64_t count = 0;
         std::vector<spanner::Value> values;
-        for (auto& r : spanner_client.ExecuteQuery(
-                 txn,
-                 spanner::SqlStatement(select_statement,
-                                       {{"job_id", spanner::Value(job_id)}}))) {
+        auto statement = spanner::SqlStatement(
+            select_statement,
+            {{"job_id", spanner::Value(job_id)},
+             {"task_timeout", spanner::Value(task_timeout.count())}});
+        for (auto& r : spanner_client.ExecuteQuery(txn, std::move(statement))) {
           if (!r) return std::move(r).status();  // TODO(coryan) - cleanup
           if (std::uniform_int_distribution<std::int64_t>(
                   0, count)(generator) == 0) {
@@ -326,20 +340,17 @@ void worker(po::variables_map const& vm) {
                                    vm["instance"].as<std::string>(),
                                    vm["database"].as<std::string>());
   auto const job_id = vm["job-id"].as<std::string>();
+  auto const task_timeout = std::chrono::minutes(vm["task-timeout"].as<int>());
   std::mt19937_64 generator(std::random_device{}());
-  std::string worker_id = "worker-id-";
-  static char const alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-  std::generate_n(std::back_inserter(worker_id), 16, [&generator] {
-    return alphabet[std::uniform_int_distribution<int>(
-        0, sizeof(alphabet) - 1)(generator)];
-  });
+  std::string worker_id = "worker-id-" + random_alphanum_string(generator, 16);
 
   std::cout << "worker_id[" << worker_id << "]: processing work queue ["
             << job_id << "]" << std::endl;
   auto spanner_client = spanner::Client(spanner::MakeConnection(database));
   auto gcs_client = gcs::Client::CreateDefaultClient().value();
   auto next_item = [&] {
-    return pick_next_work_item(spanner_client, job_id, worker_id, generator);
+    return pick_next_work_item(spanner_client, job_id, worker_id, task_timeout,
+                               generator);
   };
   for (auto item = next_item(); item; item = next_item()) {
     std::cout << "  working on task " << item->task_id << "\n";
@@ -404,7 +415,10 @@ int main(int argc, char* argv[]) try {
     if (std::thread::hardware_concurrency() == 0) return 16;
     return 16 * std::thread::hardware_concurrency();
   }();
-  long const default_object_count = 1'000'000;
+  auto const default_object_count = 1'000'000L;
+  auto const default_minimum_item_size = 5'000L;
+  auto const default_target_item_count = 10'000L;
+  auto const default_task_timeout = 10;
 
   po::positional_options_description positional;
   positional.add("action", 1);
@@ -412,7 +426,7 @@ int main(int argc, char* argv[]) try {
       "Populate a GCS Bucket with randomly named objects");
   desc.add_options()("help", "produce help message")
       //
-      ("action", po::value<std::string>()->default_value("help"),
+      ("action", po::value<std::string>()->default_value("help")->required(),
        "create the task list in the generate_jobs_queue table")
       //
       ("project",
@@ -426,16 +440,30 @@ int main(int argc, char* argv[]) try {
        "set the Cloud Spanner database id")
       //
       ("bucket", po::value<std::string>()->required(),
-       "set the source bucket name")
+       "set the destination bucket name")
       //
-      ("object-count", po::value<long>()->default_value(default_object_count))
+      ("object-count", po::value<long>()->default_value(default_object_count),
+       "set the number of objects created by the job")
       //
-      ("use-hash-prefix", po::value<bool>()->default_value(true))
+      ("use-hash-prefix", po::value<bool>()->default_value(true),
+       "prefix the object names with a hash to avoid hotspotting in GCS")
       //
       ("thread-count",
        po::value<unsigned int>()->default_value(default_thread_count))
       //
-      ("job-id", po::value<std::string>(),
+      ("minimum-work-item-size",
+       po::value<long>()->default_value(default_minimum_item_size),
+       "the work items crated by schedule-job should contain at least these "
+       "many objects")
+      //
+      ("target-work-item-count",
+       po::value<long>()->default_value(default_target_item_count),
+       "schedule-job will try to create around this many work items")
+      //
+      ("task-timeout", po::value<int>()->default_value(default_task_timeout),
+       "set the timeout (in minutes) for tasks in the WORKING state")
+      //
+      ("job-id", po::value<std::string>()->required(),
        "use this job id in the generate_jobs_queue table");
 
   po::variables_map vm;
