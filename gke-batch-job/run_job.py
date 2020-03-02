@@ -54,8 +54,8 @@ spec:
           ]
           resources:
             requests:
-              cpu: '250m'
-              memory: '50Mi'
+              cpu: '20m'
+              memory: '8Mi'
           volumeMounts:
             - name: service-account-key
               mountPath: /var/secrets/service-account-key
