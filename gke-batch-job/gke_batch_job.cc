@@ -66,13 +66,13 @@ struct work_item {
 };
 
 /// Create randomly named objects as prescribed by @p item
-void process_one_item(gcs::Client gcs_client, work_item const& item) {
-  // Initialize a random bit source with some small amount of entropy.
-  std::mt19937_64 generator(std::random_device{}());
-
+void process_one_item(gcs::Client gcs_client, std::mt19937_64& generator,
+                      work_item const& item) {
   std::string basename;
   for (std::int64_t i = 0; i != item.object_count; ++i) {
-    if (i % 100 == 0) basename = random_name_portion(generator, 8) + '-';
+    // Generating a random name is expensive, so we re-use the same name over
+    // 100 objects.
+    if (i % 100 == 0) basename = random_name_portion(generator, 32) + '-';
     auto object_name = basename + std::to_string(i);
     auto hashed = hashed_name(item.use_hash_prefix, std::move(object_name));
     std::ostringstream os;
@@ -82,6 +82,13 @@ void process_one_item(gcs::Client gcs_client, work_item const& item) {
     gcs_client.InsertObject(item.bucket, hashed, std::move(os).str()).value();
     ++total_object_count;
   }
+}
+
+/// Create randomly named objects as prescribed by @p item
+void process_one_item_gen(gcs::Client gcs_client, work_item const& item) {
+  // Initialize a random bit source with some small amount of entropy.
+  std::mt19937_64 generator(std::random_device{}());
+  process_one_item(gcs_client, generator, item);
 }
 
 /// Create N parallel threads calling process_one_item().
@@ -112,7 +119,7 @@ std::vector<std::future<void>> launch_threads(po::variables_map const& vm) {
     work_item item{"local-job", task_id, bucket, task_object_count,
                    use_hash_prefix};
     gcs::Client gcs_client = gcs::Client::CreateDefaultClient().value();
-    return std::async(std::launch::async, process_one_item,
+    return std::async(std::launch::async, process_one_item_gen,
                       std::move(gcs_client), std::move(item));
   });
   return threads;
@@ -203,7 +210,8 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
 /// Pick the next task out of the job queue.
 std::optional<work_item> pick_next_work_item(spanner::Client spanner_client,
                                              std::string const& job_id,
-                                             std::string const& worker_id) {
+                                             std::string const& worker_id,
+                                             std::mt19937_64& generator) {
   auto const select_statement = R"sql(
 SELECT task_id
      , bucket
@@ -227,7 +235,6 @@ UPDATE generate_object_jobs
    AND task_id = @task_id)sql";
 
   std::optional<work_item> item;
-  std::mt19937_64 generator(std::random_device{}());
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
@@ -328,12 +335,12 @@ void worker(po::variables_map const& vm) {
             << job_id << "]" << std::endl;
   auto spanner_client = spanner::Client(spanner::MakeConnection(database));
   auto gcs_client = gcs::Client::CreateDefaultClient().value();
-  auto next_item = [&spanner_client, &gcs_client, &job_id, &worker_id] {
-    return pick_next_work_item(spanner_client, job_id, worker_id);
+  auto next_item = [&] {
+    return pick_next_work_item(spanner_client, job_id, worker_id, generator);
   };
   for (auto item = next_item(); item; item = next_item()) {
     std::cout << "  working on task " << item->task_id << "\n";
-    process_one_item(gcs_client, *item);
+    process_one_item(gcs_client, generator, *item);
     mark_done(spanner_client, *item);
   }
 
@@ -345,7 +352,7 @@ void worker(po::variables_map const& vm) {
     std::this_thread::sleep_for(60s);
     if (auto item = next_item()) {
       std::cout << "  working on [stale] task " << item->task_id << "\n";
-      process_one_item(gcs_client, *item);
+      process_one_item(gcs_client, generator, *item);
       mark_done(spanner_client, *item);
     }
   }
