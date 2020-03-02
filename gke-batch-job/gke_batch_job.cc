@@ -216,7 +216,7 @@ SELECT task_id
    AND   updated < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 15 MINUTE)
         )
        )
- LIMIT 16
+ LIMIT 1000
 )sql";
   auto const update_statement = R"sql(
 UPDATE generate_object_jobs
