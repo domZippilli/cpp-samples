@@ -179,7 +179,7 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
   std::vector<spanner::SqlStatement> statements;
   // Cloud Spanner supports at most 20'000 rows per transaction.
   auto const max_rows = 20'000L;
-  auto const task_size = 1'000L;
+  auto const task_size = std::max(100L, object_count / 10'000);
   auto flush = [&client, &statements] {
     client
         .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
