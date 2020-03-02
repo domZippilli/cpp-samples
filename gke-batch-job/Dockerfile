@@ -64,38 +64,38 @@ RUN cmake -S. -B.build -GNinja \
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.4.1.tar.gz https://github.com/googleapis/cpp-cmakefiles/archive/v0.4.1.tar.gz
-RUN tar -zxf v0.4.1.tar.gz
-WORKDIR /var/tmp/build/cpp-cmakefiles-0.4.1
+RUN curl -s -L -o v0.5.0.tar.gz https://github.com/googleapis/cpp-cmakefiles/archive/v0.5.0.tar.gz
+RUN tar -zxf v0.5.0.tar.gz
+WORKDIR /var/tmp/build/cpp-cmakefiles-0.5.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
+RUN curl -s -L -o v0.21.0.tar.gz \
+    https://github.com/googleapis/google-cloud-cpp-common/archive/v0.21.0.tar.gz
+RUN tar -zxf v0.21.0.tar.gz
+WORKDIR /var/tmp/build/google-cloud-cpp-common-0.21.0
+RUN cmake -S. -B.build -GNinja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=OFF
+RUN cmake --build .build --target install
+
+WORKDIR /var/tmp/build
 RUN curl -s -L -o v0.20.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp-common/archive/v0.20.0.tar.gz
+    https://github.com/googleapis/google-cloud-cpp/archive/v0.20.0.tar.gz
 RUN tar -zxf v0.20.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-common-0.20.0
+WORKDIR /var/tmp/build/google-cloud-cpp-0.20.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
 RUN cmake --build .build --target install
 
 WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.19.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp/archive/v0.19.0.tar.gz
-RUN tar -zxf v0.19.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-0.19.0
-RUN cmake -S. -B.build -GNinja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_TESTING=OFF
-RUN cmake --build .build --target install
-
-WORKDIR /var/tmp/build
-RUN curl -s -L -o v0.8.0.tar.gz \
-    https://github.com/googleapis/google-cloud-cpp-spanner/archive/v0.8.0.tar.gz
-RUN tar -zxf v0.8.0.tar.gz
-WORKDIR /var/tmp/build/google-cloud-cpp-spanner-0.8.0
+RUN curl -s -L -o v0.9.0.tar.gz \
+    https://github.com/googleapis/google-cloud-cpp-spanner/archive/v0.9.0.tar.gz
+RUN tar -zxf v0.9.0.tar.gz
+WORKDIR /var/tmp/build/google-cloud-cpp-spanner-0.9.0
 RUN cmake -S. -B.build -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
