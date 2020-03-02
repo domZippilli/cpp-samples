@@ -67,12 +67,9 @@ std::vector<work_item> create_work_items(po::variables_map const& vm) {
   auto const object_count = vm["object-count"].as<long>();
   auto const use_hash_prefix = vm["use-hash-prefix"].as<bool>();
   auto const job_id = vm["job-id"].as<std::string>();
-  auto const minimum_work_item_size = vm["minimum-work-item-size"].as<long>();
-  auto const target_work_item_count = vm["target-work-item-count"].as<long>();
+  auto const task_size = vm["task-size"].as<long>();
 
   std::vector<work_item> results;
-  auto const task_size =
-      (std::max)(minimum_work_item_size, object_count / target_work_item_count);
   std::mt19937_64 generator(std::random_device{}());
   for (long offset = 0; offset < object_count; offset += task_size) {
     std::ostringstream os;
@@ -416,8 +413,7 @@ int main(int argc, char* argv[]) try {
     return 16 * std::thread::hardware_concurrency();
   }();
   auto const default_object_count = 1'000'000L;
-  auto const default_minimum_item_size = 5'000L;
-  auto const default_target_item_count = 10'000L;
+  auto const default_minimum_item_size = 1'000L;
   auto const default_task_timeout = 10;
 
   po::positional_options_description positional;
@@ -451,14 +447,9 @@ int main(int argc, char* argv[]) try {
       ("thread-count",
        po::value<unsigned int>()->default_value(default_thread_count))
       //
-      ("minimum-work-item-size",
-       po::value<long>()->default_value(default_minimum_item_size),
-       "the work items crated by schedule-job should contain at least these "
-       "many objects")
-      //
-      ("target-work-item-count",
-       po::value<long>()->default_value(default_target_item_count),
-       "schedule-job will try to create around this many work items")
+      ("task-size", po::value<long>()->default_value(default_minimum_item_size),
+       "each work item created by schedule-job should contain this number of "
+       "objects")
       //
       ("task-timeout", po::value<int>()->default_value(default_task_timeout),
        "set the timeout (in minutes) for tasks in the WORKING state")
