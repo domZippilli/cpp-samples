@@ -51,7 +51,9 @@ spec:
               '--database={{database}}',
               '--job-id={{job_id}}',
               '--bucket={{bucket}}',
-              '--object-count={{object_count}}'
+              '--object-count={{object_count}}',
+              '--task-size={{task_size}}',
+              '--task-timeout={{task_timeout}}'
           ]
           resources:
             requests:
@@ -66,7 +68,8 @@ spec:
 """)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--project', type=str, default=os.environ.get('GOOGLE_CLOUD_PROJECT'),
+parser.add_argument('--project', type=str,
+                    default=os.environ.get('GOOGLE_CLOUD_PROJECT'),
                     help='configure the Google Cloud Project')
 parser.add_argument('--instance', type=str, default='gke-batch-job',
                     help='configure the Cloud Spanner instance id')
@@ -78,27 +81,42 @@ parser.add_argument('--bucket', type=str, required=True,
                     help='pull work from this job in the work queue')
 parser.add_argument('--object-count', type=int, required=True,
                     help='pull work from this job in the work queue')
+parser.add_argument('--task-size', type=int, default=1000,
+                    help='set the size of each work item')
+parser.add_argument('--task-timeout', type=int, default=20,
+                    help='set the work item timeout in minutes')
 args = parser.parse_args()
 
 tag = '%d-%08x' % (int(time.time()), random.randint(0, 1 << 32))
 job_id = 'job-id-%s' % tag
 
-with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, text=True) as schedule:
+with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
+                      text=True) as schedule:
     schedule.communicate(
         template.render(action='schedule-job', parallelism=1, completions=1,
-                        tag=tag, project=args.project, instance=args.instance, database=args.database,
-                        bucket=args.bucket, object_count=args.object_count, job_id=job_id))
+                        tag=tag, project=args.project, instance=args.instance,
+                        database=args.database, bucket=args.bucket,
+                        object_count=args.object_count,
+                        task_size=args.task_size,
+                        task_timeout=args.task_timeout,
+                        job_id=job_id))
     schedule.wait()
 
 k8s_job_name = 'job.batch/schedule-job-%s' % tag
 print("Waiting for job %s" % k8s_job_name)
 subprocess.run(['kubectl', 'wait', '--for=condition=complete', k8s_job_name])
 
-with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE, text=True) as run:
+with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
+                      text=True) as run:
     run.communicate(
-        template.render(action='worker', parallelism=args.parallelism, completions=args.parallelism,
-                        tag=tag, project=args.project, instance=args.instance, database=args.database,
-                        bucket=args.bucket, object_count=args.object_count, job_id=job_id))
+        template.render(action='worker', parallelism=args.parallelism,
+                        completions=args.parallelism, tag=tag,
+                        project=args.project, instance=args.instance,
+                        database=args.database, bucket=args.bucket,
+                        object_count=args.object_count,
+                        task_size=args.task_size,
+                        task_timeout=args.task_timeout,
+                        job_id=job_id))
     run.wait()
 
 k8s_job_name = 'job.batch/worker-%s' % tag
