@@ -228,6 +228,8 @@ SELECT task_id
      , bucket
      , object_count
      , use_hash_prefix
+     , status
+     , owner
   FROM generate_object_jobs
  WHERE job_id = @job_id
    AND (status IS NULL
@@ -236,58 +238,67 @@ SELECT task_id
         )
        )
 )sql";
+
+  std::vector<spanner::Row> initial_rows;
+  auto statement = spanner::SqlStatement(
+      select_statement,
+      {{"job_id", spanner::Value(job_id)},
+       {"task_timeout", spanner::Value(task_timeout.count())}});
+  for (auto& r : spanner_client.ExecuteQuery(std::move(statement))) {
+    if (!r) break;
+    initial_rows.push_back(*std::move(r));
+  }
+  std::cout << "Fetched " << initial_rows.size() << " rows\n";
+  if (initial_rows.empty()) return {};
+
   auto const update_statement = R"sql(
 UPDATE generate_object_jobs
    SET status = 'WORKING',
        owner = @worker_id,
        updated = PENDING_COMMIT_TIMESTAMP()
  WHERE job_id = @job_id
-   AND task_id = @task_id)sql";
+   AND task_id = @task_id
+   AND (owner = @previous_owner
+        OR (owner IS NULL AND @previous_owner IS NULL)))sql";
 
   std::optional<work_item> item;
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
-        item = {};
-        // Use a simple Reservoir Sampling algorithm to select an item at random
-        // from the work queue.
-        std::int64_t count = 0;
-        std::vector<spanner::Value> values;
-        auto statement = spanner::SqlStatement(
-            select_statement,
-            {{"job_id", spanner::Value(job_id)},
-             {"task_timeout", spanner::Value(task_timeout.count())}});
-        for (auto& r : spanner_client.ExecuteQuery(txn, std::move(statement))) {
-          if (!r) return std::move(r).status();  // TODO(coryan) - cleanup
-          if (std::uniform_int_distribution<std::int64_t>(
-                  0, count)(generator) == 0) {
-            values = std::move(r).value().values();
-          }
-          ++count;
-        }
+        while (not initial_rows.empty()) {
+          std::cout << "Picking one row at random from " << initial_rows.size()
+                    << " rows\n";
+          item = {};
 
-        // There is no more work to do, exit the commit loop and have this
-        // function return an empty optional.
-        if (values.empty()) return spanner::Mutations{};
+          auto const idx = std::uniform_int_distribution<std::size_t>(
+              0, initial_rows.size() - 1)(generator);
+          auto const& row = initial_rows[idx];
+          auto const& values = row.values();
 
-        // TODO(coryan) - cleanup
-        auto update_result = spanner_client.ExecuteDml(
-            txn,
-            spanner::SqlStatement(update_statement,
+          auto task_id = values[0];
+          auto previous_owner = values[5];
+
+          auto update_result =
+              spanner_client
+                  .ExecuteDml(txn,
+                              spanner::SqlStatement(
+                                  update_statement,
                                   {{"job_id", spanner::Value(job_id)},
-                                   {"task_id", spanner::Value(values[0])},
-                                   {"worker_id", spanner::Value(worker_id)}}));
-        if (!update_result) return std::move(update_result).status();
-        if (update_result->RowsModified() != 1) {
-          // This is unexpected, have the Commit() loop try again.
-          return google::cloud::Status(google::cloud::StatusCode::kAborted,
-                                       "please try again");
+                                   {"task_id", task_id},
+                                   {"previous_owner", previous_owner},
+                                   {"worker_id", spanner::Value(worker_id)}}))
+                  .value();
+          std::cout << "Updated " << update_result.RowsModified() << " rows\n";
+          if (update_result.RowsModified() == 1) {
+            item = work_item{job_id, values[0].get<std::string>().value(),
+                             values[1].get<std::string>().value(),
+                             values[2].get<std::int64_t>().value(),
+                             values[3].get<bool>().value()};
+            return spanner::Mutations{};
+          }
+          // The update failed, remove that entry and try again.
+          initial_rows.erase(initial_rows.begin() + idx);
         }
-
-        item = work_item{job_id, values[0].get<std::string>().value(),
-                         values[1].get<std::string>().value(),
-                         values[2].get<std::int64_t>().value(),
-                         values[3].get<bool>().value()};
         return spanner::Mutations{};
       })
       .value();
