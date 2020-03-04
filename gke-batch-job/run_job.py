@@ -57,8 +57,8 @@ spec:
           ]
           resources:
             requests:
-              cpu: '10m'
-              memory: '32Mi'
+              cpu: '20m'
+              memory: '{{memory_requirement}}Mi'
           volumeMounts:
             - name: service-account-key
               mountPath: /var/secrets/service-account-key
@@ -89,11 +89,14 @@ args = parser.parse_args()
 
 tag = '%d-%08x' % (int(time.time()), random.randint(0, 1 << 32))
 job_id = 'job-id-%s' % tag
+memory_requirement = 16.0 * max((args.object_count / args.task_size) / 25_000,
+                                1.0)
 
 with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
                       text=True) as schedule:
     schedule.communicate(
         template.render(action='schedule-job', parallelism=1, completions=1,
+                        memory_requirement=memory_requirement,
                         tag=tag, project=args.project, instance=args.instance,
                         database=args.database, bucket=args.bucket,
                         object_count=args.object_count,
@@ -110,6 +113,7 @@ with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
                       text=True) as run:
     run.communicate(
         template.render(action='worker', parallelism=args.parallelism,
+                        memory_requirement=memory_requirement,
                         completions=args.parallelism, tag=tag,
                         project=args.project, instance=args.instance,
                         database=args.database, bucket=args.bucket,
