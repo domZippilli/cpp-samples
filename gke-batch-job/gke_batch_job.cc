@@ -306,21 +306,26 @@ UPDATE generate_object_jobs
   return item;
 }
 
-/// Mark a work item as completed.
-void mark_done(spanner::Client spanner_client, work_item const& item) {
+/// Set the status for a work item.
+void set_item_status(spanner::Client spanner_client, work_item const& item,
+                     std::string worker_id,
+                     google::cloud::optional<std::string> new_status) {
   // TODO(coryan) - cleanup
   spanner_client.Commit(
       [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
         auto const statement = R"sql(
 UPDATE generate_object_jobs
-   SET status = 'DONE',
+   SET status = @new_status,
        updated = PENDING_COMMIT_TIMESTAMP()
  WHERE job_id = @job_id
-   AND task_id = @task_id)sql";
+   AND task_id = @task_id
+   AND owner = @worker_id)sql";
         auto result = spanner_client.ExecuteDml(
             txn, spanner::SqlStatement(
-                     statement, {{"job_id", spanner::Value(item.job_id)},
-                                 {"task_id", spanner::Value(item.task_id)}}));
+                     statement, {{"new_status", spanner::Value(new_status)},
+                                 {"job_id", spanner::Value(item.job_id)},
+                                 {"task_id", spanner::Value(item.task_id)},
+                                 {"worker_id", spanner::Value(worker_id)}}));
         if (!result) return std::move(result).status();
         return spanner::Mutations{};
       });
@@ -360,10 +365,17 @@ void worker(po::variables_map const& vm) {
     return pick_next_work_item(spanner_client, job_id, worker_id, task_timeout,
                                generator);
   };
+  auto process_item = [&](work_item const& item) {
+    try {
+      process_one_item(gcs_client, generator, item);
+      set_item_status(spanner_client, item, worker_id, "DONE");
+    } catch (std::exception const& ex) {
+      set_item_status(spanner_client, item, worker_id, {});
+    }
+  };
   for (auto item = next_item(); item; item = next_item()) {
     std::cout << "  working on task " << item->task_id << "\n";
-    process_one_item(gcs_client, generator, *item);
-    mark_done(spanner_client, *item);
+    process_item(*item);
   }
 
   std::cout << "worker_id[" << worker_id << "]: waiting for stale jobs ["
@@ -374,8 +386,7 @@ void worker(po::variables_map const& vm) {
     std::this_thread::sleep_for(60s);
     if (auto item = next_item()) {
       std::cout << "  working on [stale] task " << item->task_id << "\n";
-      process_one_item(gcs_client, generator, *item);
-      mark_done(spanner_client, *item);
+      process_item(*item);
     }
   }
 
