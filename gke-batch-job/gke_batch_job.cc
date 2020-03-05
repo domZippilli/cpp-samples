@@ -241,6 +241,7 @@ SELECT task_id
 
   auto get_work_items = [&] {
     std::vector<spanner::Row> available_work_items;
+    available_work_items.reserve(10000);
     auto statement = spanner::SqlStatement(
         select_statement,
         {{"job_id", spanner::Value(job_id)},
@@ -249,7 +250,8 @@ SELECT task_id
       if (not r) break;
       available_work_items.push_back(*std::move(r));
     }
-    std::cout << "Fetched " << available_work_items.size() << " rows\n";
+    std::cout << "Fetched " << available_work_items.size() << " rows"
+              << std::endl;
     return available_work_items;
   };
 
@@ -286,7 +288,8 @@ UPDATE generate_object_jobs
 
             std::cout << "Trying to claim work item "
                       << task_id.get<std::string>().value()
-                      << " list size = " << available_work_items.size() << "\n";
+                      << " list size = " << available_work_items.size()
+                      << std::endl;
             auto update_result =
                 spanner_client
                     .ExecuteDml(txn,
@@ -297,8 +300,8 @@ UPDATE generate_object_jobs
                                      {"previous_owner", previous_owner},
                                      {"worker_id", spanner::Value(worker_id)}}))
                     .value();
-            std::cout << "Updated " << update_result.RowsModified()
-                      << " rows\n";
+            std::cout << "Updated " << update_result.RowsModified() << " rows"
+                      << std::endl;
             if (update_result.RowsModified() == 1) {
               item = work_item{job_id, values[0].get<std::string>().value(),
                                values[1].get<std::string>().value(),
