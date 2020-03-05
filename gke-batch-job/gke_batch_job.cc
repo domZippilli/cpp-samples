@@ -363,11 +363,14 @@ SELECT COUNT(*)
 
 /// Run the worker thread for a GKE batch job.
 void worker(po::variables_map const& vm) {
+  auto const job_id = vm["job-id"].as<std::string>();
+  std::cout << "Running worker for " << job_id << std::endl;
+
   spanner::Database const database(vm["project"].as<std::string>(),
                                    vm["instance"].as<std::string>(),
                                    vm["database"].as<std::string>());
-  auto const job_id = vm["job-id"].as<std::string>();
   auto const task_timeout = std::chrono::minutes(vm["task-timeout"].as<int>());
+
   std::mt19937_64 generator(std::random_device{}());
   std::string worker_id = "worker-id-" + random_alphanum_string(generator, 16);
 
@@ -375,6 +378,9 @@ void worker(po::variables_map const& vm) {
             << job_id << "]" << std::endl;
   auto spanner_client = spanner::Client(spanner::MakeConnection(database));
   auto gcs_client = gcs::Client::CreateDefaultClient().value();
+  std::cout << "worker_id[" << worker_id << "]: connected to GCS and Spanner"
+            << std::endl;
+
   auto next_item = [&] {
     return pick_next_work_item(spanner_client, job_id, worker_id, task_timeout,
                                generator);
@@ -439,6 +445,7 @@ void create_objects(po::variables_map const& vm) {
 }
 
 int main(int argc, char* argv[]) try {
+  std::cout << "Starting ... " << std::endl;
   auto get_env = [](std::string_view name) -> std::string {
     auto value = std::getenv(name.data());
     return value == nullptr ? std::string{} : value;
@@ -500,6 +507,7 @@ int main(int argc, char* argv[]) try {
                 .run(),
             vm);
   po::notify(vm);
+  std::cout << "Arguments parsed" << std::endl;
 
   if (vm.count("help")) {
     std::cout << desc << "\n";
@@ -525,6 +533,7 @@ int main(int argc, char* argv[]) try {
     std::cerr << desc << "\n";
     return 1;
   }
+  std::cout << "Executing " << action_name << " action" << std::endl;
   a->second(vm);
 
   return 0;
