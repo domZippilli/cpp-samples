@@ -236,19 +236,22 @@ SELECT task_id
    AND   TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), updated, MINUTE) > @task_timeout
         )
        )
+ LIMIT 10000
 )sql";
 
-  std::vector<spanner::Row> available_work_items;
-  auto statement = spanner::SqlStatement(
-      select_statement,
-      {{"job_id", spanner::Value(job_id)},
-       {"task_timeout", spanner::Value(task_timeout.count())}});
-  for (auto& r : spanner_client.ExecuteQuery(std::move(statement))) {
-    if (not r) break;
-    available_work_items.push_back(*std::move(r));
-  }
-  std::cout << "Fetched " << available_work_items.size() << " rows\n";
-  if (available_work_items.empty()) return {};
+  auto get_work_items = [&] {
+    std::vector<spanner::Row> available_work_items;
+    auto statement = spanner::SqlStatement(
+        select_statement,
+        {{"job_id", spanner::Value(job_id)},
+         {"task_timeout", spanner::Value(task_timeout.count())}});
+    for (auto& r : spanner_client.ExecuteQuery(std::move(statement))) {
+      if (not r) break;
+      available_work_items.push_back(*std::move(r));
+    }
+    std::cout << "Fetched " << available_work_items.size() << " rows\n";
+    return available_work_items;
+  };
 
   auto const update_statement = R"sql(
 UPDATE generate_object_jobs
@@ -264,39 +267,46 @@ UPDATE generate_object_jobs
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
-        while (not available_work_items.empty()) {
-          std::cout << "Picking one row at random from "
-                    << available_work_items.size() << " rows\n";
-          item = {};
+        item = {};
+        for (auto available_work_items = get_work_items();
+             not available_work_items.empty();
+             available_work_items = get_work_items()) {
+          while (not available_work_items.empty()) {
+            item = {};
+            std::cout << "Picking one row at random from "
+                      << available_work_items.size() << " rows\n";
 
-          auto const idx = std::uniform_int_distribution<std::size_t>(
-              0, available_work_items.size() - 1)(generator);
-          auto const& row = available_work_items[idx];
-          auto const& values = row.values();
+            auto const idx = std::uniform_int_distribution<std::size_t>(
+                0, available_work_items.size() - 1)(generator);
+            auto const& row = available_work_items[idx];
+            auto const& values = row.values();
 
-          auto task_id = values[0];
-          auto previous_owner = values[5];
+            auto task_id = values[0];
+            auto previous_owner = values[5];
 
-          std::cout << "Trying to claim work item "
-                    << task_id.get<std::string>().value()
-                    << " list size = " << available_work_items.size() << "\n";
-          auto update_result =
-              spanner_client
-                  .ExecuteDml(txn,
-                              spanner::SqlStatement(
-                                  update_statement,
-                                  {{"job_id", spanner::Value(job_id)},
-                                   {"task_id", task_id},
-                                   {"previous_owner", previous_owner},
-                                   {"worker_id", spanner::Value(worker_id)}}))
-                  .value();
-          std::cout << "Updated " << update_result.RowsModified() << " rows\n";
-          if (update_result.RowsModified() == 1) {
-            item = work_item{job_id, values[0].get<std::string>().value(),
-                             values[1].get<std::string>().value(),
-                             values[2].get<std::int64_t>().value(),
-                             values[3].get<bool>().value()};
-            return spanner::Mutations{};
+            std::cout << "Trying to claim work item "
+                      << task_id.get<std::string>().value()
+                      << " list size = " << available_work_items.size() << "\n";
+            auto update_result =
+                spanner_client
+                    .ExecuteDml(txn,
+                                spanner::SqlStatement(
+                                    update_statement,
+                                    {{"job_id", spanner::Value(job_id)},
+                                     {"task_id", task_id},
+                                     {"previous_owner", previous_owner},
+                                     {"worker_id", spanner::Value(worker_id)}}))
+                    .value();
+            std::cout << "Updated " << update_result.RowsModified()
+                      << " rows\n";
+            if (update_result.RowsModified() == 1) {
+              item = work_item{job_id, values[0].get<std::string>().value(),
+                               values[1].get<std::string>().value(),
+                               values[2].get<std::int64_t>().value(),
+                               values[3].get<bool>().value()};
+              return spanner::Mutations{};
+            }
+            available_work_items.erase(available_work_items.begin() + idx);
           }
         }
         return spanner::Mutations{};
