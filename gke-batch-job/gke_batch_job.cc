@@ -161,7 +161,7 @@ CREATE TABLE generate_object_jobs (
     std::cout << '.' << std::flush;
   }
   auto ddl = f.get();
-  if (!ddl) throw std::runtime_error(ddl.status().message());
+  if (not ddl) throw std::runtime_error(ddl.status().message());
   std::cout << " DONE" << std::endl;
 }
 
@@ -195,9 +195,8 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
   std::vector<spanner::SqlStatement> statements;
   auto flush = [&client, &statements] {
     client
-        .Commit([&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
-          auto result = client.ExecuteBatchDml(txn, statements);
-          if (!result) return std::move(result).status();
+        .Commit([&](auto txn) {
+          auto result = client.ExecuteBatchDml(txn, statements).value();
           return spanner::Mutations{};
         })
         .value();
@@ -239,17 +238,17 @@ SELECT task_id
        )
 )sql";
 
-  std::vector<spanner::Row> initial_rows;
+  std::vector<spanner::Row> available_work_items;
   auto statement = spanner::SqlStatement(
       select_statement,
       {{"job_id", spanner::Value(job_id)},
        {"task_timeout", spanner::Value(task_timeout.count())}});
   for (auto& r : spanner_client.ExecuteQuery(std::move(statement))) {
-    if (!r) break;
-    initial_rows.push_back(*std::move(r));
+    if (not r) break;
+    available_work_items.push_back(*std::move(r));
   }
-  std::cout << "Fetched " << initial_rows.size() << " rows\n";
-  if (initial_rows.empty()) return {};
+  std::cout << "Fetched " << available_work_items.size() << " rows\n";
+  if (available_work_items.empty()) return {};
 
   auto const update_statement = R"sql(
 UPDATE generate_object_jobs
@@ -265,19 +264,22 @@ UPDATE generate_object_jobs
   spanner_client
       .Commit([&](spanner::Transaction const& txn)
                   -> google::cloud::StatusOr<spanner::Mutations> {
-        while (not initial_rows.empty()) {
-          std::cout << "Picking one row at random from " << initial_rows.size()
-                    << " rows\n";
+        while (not available_work_items.empty()) {
+          std::cout << "Picking one row at random from "
+                    << available_work_items.size() << " rows\n";
           item = {};
 
           auto const idx = std::uniform_int_distribution<std::size_t>(
-              0, initial_rows.size() - 1)(generator);
-          auto const& row = initial_rows[idx];
+              0, available_work_items.size() - 1)(generator);
+          auto const& row = available_work_items[idx];
           auto const& values = row.values();
 
           auto task_id = values[0];
           auto previous_owner = values[5];
 
+          std::cout << "Trying to claim work item "
+                    << task_id.get<std::string>().value()
+                    << " list size = " << available_work_items.size() << "\n";
           auto update_result =
               spanner_client
                   .ExecuteDml(txn,
@@ -296,8 +298,6 @@ UPDATE generate_object_jobs
                              values[3].get<bool>().value()};
             return spanner::Mutations{};
           }
-          // The update failed, remove that entry and try again.
-          initial_rows.erase(initial_rows.begin() + idx);
         }
         return spanner::Mutations{};
       })
@@ -310,25 +310,25 @@ UPDATE generate_object_jobs
 void set_item_status(spanner::Client spanner_client, work_item const& item,
                      std::string worker_id,
                      google::cloud::optional<std::string> new_status) {
-  // TODO(coryan) - cleanup
-  spanner_client.Commit(
-      [&](auto txn) -> google::cloud::StatusOr<spanner::Mutations> {
-        auto const statement = R"sql(
+  spanner_client.Commit([&](auto txn) {
+    auto const statement = R"sql(
 UPDATE generate_object_jobs
    SET status = @new_status,
        updated = PENDING_COMMIT_TIMESTAMP()
  WHERE job_id = @job_id
    AND task_id = @task_id
    AND owner = @worker_id)sql";
-        auto result = spanner_client.ExecuteDml(
-            txn, spanner::SqlStatement(
-                     statement, {{"new_status", spanner::Value(new_status)},
-                                 {"job_id", spanner::Value(item.job_id)},
-                                 {"task_id", spanner::Value(item.task_id)},
-                                 {"worker_id", spanner::Value(worker_id)}}));
-        if (!result) return std::move(result).status();
-        return spanner::Mutations{};
-      });
+    auto result =
+        spanner_client
+            .ExecuteDml(
+                txn, spanner::SqlStatement(
+                         statement, {{"new_status", spanner::Value(new_status)},
+                                     {"job_id", spanner::Value(item.job_id)},
+                                     {"task_id", spanner::Value(item.task_id)},
+                                     {"worker_id", spanner::Value(worker_id)}}))
+            .value();
+    return spanner::Mutations{};
+  });
 }
 
 bool has_working_tasks(spanner::Client spanner_client,
