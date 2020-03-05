@@ -172,7 +172,7 @@ void schedule_job(po::variables_map const& vm) {
                                    vm["instance"].as<std::string>(),
                                    vm["database"].as<std::string>());
 
-  std::cout << "Populating work queue for job " << job_id << "\n";
+  std::cout << "Populating work queue for job " << job_id << std::endl;
   auto client = spanner::Client(spanner::MakeConnection(database));
 
   auto const insert_statement = R"sql(
@@ -200,7 +200,8 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
           return spanner::Mutations{};
         })
         .value();
-    std::cout << "Committed " << statements.size() << " work items\n";
+    std::cout << "Committed " << statements.size() << " work items"
+              << std::endl;
     statements.clear();
   };
   for (auto const& wi : work_items) {
@@ -214,7 +215,7 @@ VALUES (@job_id, @task_id, @bucket, @object_count, @use_hash_prefix,
     if (statements.size() >= max_rows) flush();
   }
   if (not statements.empty()) flush();
-  std::cout << "DONE\n";
+  std::cout << "DONE" << std::endl;
 }
 
 /// Pick the next task out of the job queue.
@@ -276,7 +277,7 @@ UPDATE generate_object_jobs
           while (not available_work_items.empty()) {
             item = {};
             std::cout << "Picking one row at random from "
-                      << available_work_items.size() << " rows\n";
+                      << available_work_items.size() << " rows" << std::endl;
 
             auto const idx = std::uniform_int_distribution<std::size_t>(
                 0, available_work_items.size() - 1)(generator);
@@ -387,18 +388,18 @@ void worker(po::variables_map const& vm) {
     }
   };
   for (auto item = next_item(); item; item = next_item()) {
-    std::cout << "  working on task " << item->task_id << "\n";
+    std::cout << "  working on task " << item->task_id << std::endl;
     process_item(*item);
   }
 
   std::cout << "worker_id[" << worker_id << "]: waiting for stale jobs ["
             << job_id << "]" << std::endl;
   while (has_working_tasks(spanner_client, job_id)) {
-    std::cout << "  waiting for slow tasks\n";
+    std::cout << "  waiting for slow tasks" << std::endl;
     using namespace std::chrono_literals;
     std::this_thread::sleep_for(60s);
     if (auto item = next_item()) {
-      std::cout << "  working on [stale] task " << item->task_id << "\n";
+      std::cout << "  working on [stale] task " << item->task_id << std::endl;
       process_item(*item);
     }
   }
