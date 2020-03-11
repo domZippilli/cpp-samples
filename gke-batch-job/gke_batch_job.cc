@@ -105,7 +105,10 @@ void worker_thread(std::vector<work_item> const& work_items,
                    unsigned int thread_count, int thread_id) {
   // Initialize a random bit source with some small amount of entropy.
   std::mt19937_64 generator(std::random_device{}());
-  gcs::Client gcs_client = gcs::Client::CreateDefaultClient().value();
+  auto gcs_client =
+      gcs::Client(gcs::ClientOptions::CreateDefaultClientOptions()
+                      .value()
+                      .set_download_stall_timeout(std::chrono::seconds(15)));
   for (std::size_t i = 0; i != work_items.size(); ++i) {
     // Shard the work across the threads.
     if (i % thread_count != thread_id) continue;
