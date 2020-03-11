@@ -30,7 +30,7 @@ metadata:
 spec:
   parallelism: {{parallelism}}
   completions: {{completions}}
-  backoffLimit: 100
+  backoffLimit: {{backoff_limit}}
   template:
     metadata:
       name: generate-randomly-named-objects-{{action}}
@@ -96,6 +96,7 @@ with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
                       text=True) as schedule:
     schedule.communicate(
         template.render(action='schedule-job', parallelism=1, completions=1,
+                        backoff_limit=2,
                         memory_requirement=memory_requirement,
                         tag=tag, project=args.project, instance=args.instance,
                         database=args.database, bucket=args.bucket,
@@ -113,6 +114,7 @@ with subprocess.Popen(['kubectl', 'apply', '-f', '-'], stdin=subprocess.PIPE,
                       text=True) as run:
     run.communicate(
         template.render(action='worker', parallelism=args.parallelism,
+                        backoff_limit=max(100, args.parallelism * 6),
                         memory_requirement=memory_requirement,
                         completions=args.parallelism, tag=tag,
                         project=args.project, instance=args.instance,
