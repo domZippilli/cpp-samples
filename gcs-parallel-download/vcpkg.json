@@ -9,6 +9,7 @@
     "crc32c",
     "cppcodec",
     "google-cloud-cpp",
+    "boost-coroutine2",
     "boost-endian",
     "boost-program-options",
     "fmt"
